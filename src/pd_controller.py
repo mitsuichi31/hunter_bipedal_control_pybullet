@@ -3,7 +3,7 @@ PD Controller for joint control
 """
 
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 
 class PDController:
@@ -59,22 +59,40 @@ class MultiJointPDController:
     """
     PD Controller for multiple joints
 
-    Allows different gains for different joints
+    Allows different gains for different joints and optional gravity compensation
     """
 
-    def __init__(self, default_kp: float = 100.0, default_kd: float = 10.0):
+    def __init__(self,
+                 default_kp: float = 100.0,
+                 default_kd: float = 10.0,
+                 robot_id: Optional[int] = None,
+                 enable_gravity_compensation: bool = True):
         """
         Initialize multi-joint PD controller
 
         Args:
             default_kp: Default proportional gain
             default_kd: Default derivative gain
+            robot_id: PyBullet robot ID (required for gravity compensation)
+            enable_gravity_compensation: Enable gravity feedforward (requires robot_id)
         """
         self.default_kp = default_kp
         self.default_kd = default_kd
+        self.robot_id = robot_id
 
         # Joint-specific gains: joint_name -> (kp, kd)
         self.joint_gains = {}
+
+        # Gravity compensation (Phase 1.3)
+        self.gravity_comp = None
+        self.enable_gravity_comp = False
+        if robot_id is not None and enable_gravity_compensation:
+            try:
+                from gravity_compensation import GravityCompensation
+                self.gravity_comp = GravityCompensation(robot_id)
+                self.enable_gravity_comp = True
+            except ImportError:
+                pass  # Gravity compensation module not available
 
     def set_joint_gains(self, joint_name: str, kp: float, kd: float):
         """
@@ -107,6 +125,9 @@ class MultiJointPDController:
         """
         Compute control torques for multiple joints
 
+        Uses PD feedback with optional gravity feedforward compensation:
+            τ = τ_pd + τ_gravity
+
         Args:
             target_positions: Dictionary of target positions {joint_name: position}
             current_positions: Dictionary of current positions {joint_name: position}
@@ -122,6 +143,7 @@ class MultiJointPDController:
         if current_velocities is None:
             current_velocities = {name: 0.0 for name in current_positions.keys()}
 
+        # Compute PD feedback torques
         torques = {}
 
         for joint_name, target_pos in target_positions.items():
@@ -135,12 +157,20 @@ class MultiJointPDController:
             # Get joint-specific gains
             kp, kd = self.get_joint_gains(joint_name)
 
-            # Compute torque
+            # Compute PD feedback torque
             position_error = target_pos - current_pos
             velocity_error = target_vel - current_vel
             torque = kp * position_error + kd * velocity_error
 
             torques[joint_name] = torque
+
+        # Add gravity compensation feedforward (Phase 1.3)
+        if self.enable_gravity_comp and self.gravity_comp is not None:
+            gravity_torques = self.gravity_comp.compute_gravity_torques_dict(current_positions)
+
+            for joint_name in torques.keys():
+                if joint_name in gravity_torques:
+                    torques[joint_name] += gravity_torques[joint_name]
 
         return torques
 
@@ -148,6 +178,26 @@ class MultiJointPDController:
         """Update default gains"""
         self.default_kp = kp
         self.default_kd = kd
+
+    def enable_gravity_compensation(self, enable: bool = True):
+        """
+        Enable or disable gravity compensation
+
+        Args:
+            enable: True to enable, False to disable
+        """
+        if self.gravity_comp is not None:
+            self.enable_gravity_comp = enable
+            self.gravity_comp.enable_compensation(enable)
+
+    def get_gravity_compensation_status(self) -> bool:
+        """
+        Check if gravity compensation is enabled
+
+        Returns:
+            True if enabled, False otherwise
+        """
+        return self.enable_gravity_comp
 
 
 class AdaptivePDController(MultiJointPDController):
@@ -157,8 +207,12 @@ class AdaptivePDController(MultiJointPDController):
     This controller can adjust gains based on tracking performance
     """
 
-    def __init__(self, default_kp: float = 100.0, default_kd: float = 10.0):
-        super().__init__(default_kp, default_kd)
+    def __init__(self,
+                 default_kp: float = 100.0,
+                 default_kd: float = 10.0,
+                 robot_id: Optional[int] = None,
+                 enable_gravity_compensation: bool = True):
+        super().__init__(default_kp, default_kd, robot_id, enable_gravity_compensation)
 
         # Tracking history for adaptive tuning
         self.error_history = {}  # joint_name -> list of errors

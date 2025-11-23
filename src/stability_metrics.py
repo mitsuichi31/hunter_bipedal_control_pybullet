@@ -427,7 +427,13 @@ def compute_com(robot_id: int) -> np.ndarray:
     return metrics.compute_com_position()
 
 
-def compute_zmp(robot_id: int, dt: float) -> np.ndarray:
+def compute_com_velocity(robot_id: int, dt: float = 0.001) -> np.ndarray:
+    """Compute CoM velocity for a robot"""
+    metrics = StabilityMetrics(robot_id)
+    return metrics.compute_com_velocity(dt)
+
+
+def compute_zmp(robot_id: int, dt: float = 0.001) -> np.ndarray:
     """Compute ZMP for a robot"""
     metrics = StabilityMetrics(robot_id)
     com_pos = metrics.compute_com_position()

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from mpc_controller import LinearInvertedPendulumMPC, MPCParams
 from inverse_kinematics import BipedalIKSolver
+from stability_metrics import compute_com, compute_com_velocity, compute_zmp
 
 
 @dataclass
@@ -77,16 +78,18 @@ class ZMPBalanceController:
         """
         Get current center of mass position and velocity
 
+        Uses accurate computation from stability_metrics module that
+        considers all links weighted by their masses.
+
         Returns:
             com_pos: CoM position [x, y, z]
             com_vel: CoM velocity [dx, dy, dz]
         """
-        # Get base (torso) position and velocity as approximation
-        # For more accurate CoM, would need to compute weighted average of all links
-        base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
-        base_vel, base_ang_vel = p.getBaseVelocity(self.robot_id)
+        # Use accurate CoM computation from stability_metrics (Phase 1.1)
+        com_pos = compute_com(self.robot_id)
+        com_vel = compute_com_velocity(self.robot_id)
 
-        return np.array(base_pos), np.array(base_vel)
+        return com_pos, com_vel
 
     def get_support_polygon_center(self) -> np.ndarray:
         """
@@ -107,22 +110,16 @@ class ZMPBalanceController:
 
     def compute_zmp(self) -> np.ndarray:
         """
-        Compute actual ZMP position based on current forces
+        Compute actual ZMP position based on dynamics
 
-        For simplification, we approximate ZMP as the projection of CoM
-        In full implementation, would use ground reaction forces
+        Uses accurate computation from stability_metrics module that
+        includes acceleration terms: zmp_x = x - (h/g) * ddot_x
 
         Returns:
             zmp: ZMP position [x, y]
         """
-        com_pos, com_vel = self.get_current_com_state()
-
-        # Simplified ZMP calculation (would need force sensors for accurate ZMP)
-        # ZMP ≈ CoM projection + acceleration term
-        # zmp_x = x - (z/g) * ddot{x}
-
-        # For now, use CoM projection as approximation
-        zmp = com_pos[0:2]
+        # Use accurate ZMP computation from stability_metrics (Phase 1.2)
+        zmp = compute_zmp(self.robot_id)
 
         return zmp
 
