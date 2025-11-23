@@ -1,0 +1,68 @@
+# Hunter Bipedal Robot Simulation Configuration
+
+# Simulation settings
+simulation:
+  dt: 0.001                 # Simulation time step (seconds)
+  use_gui: true             # Enable GUI visualization
+  use_real_time: false      # Use real-time simulation
+  duration: 20.0            # Simulation duration (seconds)
+
+# Robot initial state
+initial_state:
+  position: [0.0, 0.0, 0.5]            # Base position [x, y, z]
+  orientation: [0.0, 0.0, 0.0, 1.0]    # Base orientation quaternion [x, y, z, w]
+
+# Gait parameters
+gait:
+  step_length: 0.08         # Step length (m)
+  step_height: 0.04         # Foot lift height (m)
+  step_period: 1.2          # Time for one step (s)
+  stance_width: 0.18        # Distance between feet (m)
+  body_height: 0.45         # Nominal body height (m)
+  double_support_ratio: 0.2 # Ratio of double support phase
+
+# PD Controller gains
+pd_controller:
+  # Default gains
+  default_kp: 200.0
+  default_kd: 20.0
+
+  # Joint-specific gains
+  # Format: joint_name: [kp, kd]
+  joint_gains:
+    # Hip roll joints
+    leg_l1_joint: [150.0, 15.0]
+    leg_r1_joint: [150.0, 15.0]
+
+    # Hip yaw joints
+    leg_l2_joint: [180.0, 18.0]
+    leg_r2_joint: [180.0, 18.0]
+
+    # Hip pitch joints (upper leg)
+    leg_l3_joint: [250.0, 25.0]
+    leg_r3_joint: [250.0, 25.0]
+
+    # Knee joints (lower leg)
+    leg_l4_joint: [250.0, 25.0]
+    leg_r4_joint: [250.0, 25.0]
+
+    # Ankle pitch joints
+    leg_l5_joint: [180.0, 18.0]
+    leg_r5_joint: [180.0, 18.0]
+
+# Inverse Kinematics settings
+ik_solver:
+  max_iterations: 100
+  residual_threshold: 0.0001
+
+# Logging settings
+logging:
+  enable_logging: true
+  log_interval: 0.1         # Log interval (seconds)
+  log_dir: "../logs"
+
+  # What to log
+  log_joint_states: true
+  log_base_state: true
+  log_contact_forces: true
+  log_target_positions: true

@@ -1,0 +1,14 @@
+# Hunter Bipedal Robot Simulation Requirements
+
+# Core dependencies
+pybullet>=3.2.5
+numpy>=1.21.0
+pyyaml>=6.0
+
+# Optimization for Whole-Body Control
+cvxpy>=1.3.0
+scipy>=1.9.0
+
+# Optional dependencies for logging and visualization
+matplotlib>=3.5.0
+pandas>=1.3.0

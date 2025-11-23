@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  hunter-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hunter-bipedal-sim:latest
+    container_name: hunter-simulation
+
+    # X11フォワーディング設定（GUIを使用する場合）
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      # プロジェクトディレクトリをマウント
+      - .:/workspace/hunter
+      # X11ソケットをマウント（GUI用）
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+    # ネットワーク設定
+    network_mode: host
+
+    # デバイスアクセス（GPU使用時）
+    # devices:
+    #   - /dev/dri:/dev/dri
+
+    # 権限設定
+    privileged: false
+
+    # リソース制限（オプション）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '4'
+    #       memory: 8G
+
+    # コンテナ起動後も実行し続ける
+    stdin_open: true
+    tty: true
+
+    # 作業ディレクトリ
+    working_dir: /workspace/hunter
+
+    # デフォルトコマンド
+    command: /bin/bash
