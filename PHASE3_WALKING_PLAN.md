@@ -15,6 +15,14 @@ Phase 3 will replace the broken IK-based walking approach with a WBC-based archi
 
 ---
 
+## Recent Progress (Nov 25, 2025)
+
+- Integrated WBC walking torque path (`wbc_walking_controller.py`): now uses WBC QP ground forces → foot Jacobians → inverse dynamics + gravity comp. Added height regulation gains and tuned orientation/CoM gains down.
+- Fresh baseline (docker, headless): still unstable, emergency stop at ~0.15-0.35s; failures due to ZMP offset and pitch excursions (~22°). Torque spikes present during early steps.
+- Next: refine contact force mapping (Jacobians include 6 base DOFs; using actuated slice), retune height/CoM gains, and improve contact FSM transitions before adding a walking smoke test.
+
+---
+
 ## Prerequisites (Already Complete ✅)
 
 From Phase 1 & 2, we have:

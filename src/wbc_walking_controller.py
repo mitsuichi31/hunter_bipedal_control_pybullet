@@ -108,12 +108,14 @@ class ContactTransitionManager:
 class WBCWalkingParams:
     """Parameters for WBC walking controller"""
     # Control gains - Body orientation
-    kp_orientation: float = 100.0   # Body orientation tracking gain
-    kd_orientation: float = 10.0    # Body orientation damping
+    kp_orientation: float = 60.0    # Body orientation tracking gain (reduced)
+    kd_orientation: float = 8.0     # Body orientation damping
 
     # Control gains - CoM tracking
-    kp_com: float = 50.0            # CoM position tracking gain
-    kd_com: float = 5.0             # CoM velocity damping
+    kp_com: float = 20.0            # CoM position tracking gain
+    kd_com: float = 4.0             # CoM velocity damping
+    height_kp: float = 60.0         # Vertical height regulation gain
+    height_kd: float = 6.0          # Vertical velocity damping
 
     # Control gains - Swing foot
     kp_swing: float = 100.0         # Swing foot position tracking
@@ -123,7 +125,7 @@ class WBCWalkingParams:
     kd_stance: float = 20.0         # Stance foot damping (drive velocity to zero)
 
     # Balance parameters
-    com_height_target: float = 0.55  # Target CoM height (m)
+    com_height_target: float = 0.65  # Target CoM height (m, nearer to stable straight-leg)
     max_com_offset: float = 0.08     # Maximum CoM offset from center (m)
 
     # Safety limits
@@ -448,125 +450,108 @@ class WBCWalkingController:
 
         return True, "Stable"
 
+    def _get_actuated_joint_states(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return joint positions/velocities in InverseDynamics actuated order"""
+        positions = []
+        velocities = []
+        for idx in self.inv_dyn._actuated_joints:
+            state = p.getJointState(self.robot_id, idx)
+            positions.append(state[0])
+            velocities.append(state[1])
+        return np.array(positions), np.array(velocities)
+
+    def _map_torques_to_dict(self, torques_array: np.ndarray) -> Dict[str, float]:
+        """Map torque array (actuated order) to {joint_name: torque}"""
+        torques = {name: 0.0 for name in self.joint_dict.keys()}
+        for i, idx in enumerate(self.inv_dyn._actuated_joints):
+            joint_name = self.inv_dyn._joint_names.get(idx)
+            if joint_name in torques:
+                torques[joint_name] = float(torques_array[i])
+        return torques
+
+    def _compute_contact_jacobians(self) -> Dict[str, Optional[np.ndarray]]:
+        """Compute linear Jacobians for each foot, reduced to actuated joints"""
+        q = [p.getJointState(self.robot_id, idx)[0] for idx in self.inv_dyn._actuated_joints]
+        qd = [p.getJointState(self.robot_id, idx)[1] for idx in self.inv_dyn._actuated_joints]
+        zeros = [0.0] * len(q)
+
+        jacobians = {}
+        for foot_name, foot_idx in (("left_foot", self.left_foot_link), ("right_foot", self.right_foot_link)):
+            try:
+                j_lin, j_ang = p.calculateJacobian(
+                    self.robot_id,
+                    foot_idx,
+                    [0, 0, 0],
+                    q,
+                    qd,
+                    zeros
+                )
+                # PyBullet returns base dofs first (6) then provided joints
+                j_lin = np.array(j_lin)[:, 6:]
+                jacobians[foot_name] = j_lin
+            except Exception as e:
+                print(f"Jacobian compute failed for {foot_name}: {e}")
+                jacobians[foot_name] = None
+        return jacobians
+
     def _compute_torques(self, robot_state: Dict, gait_targets: Dict,
                          current_contact: Tuple[bool, bool]) -> Dict[str, float]:
         """
-        Compute joint torques using simplified WBC + inverse dynamics
+        Compute joint torques using WBC QP + inverse dynamics pathway
 
-        Approach:
-        1. Use gravity compensation from inverse dynamics
-        2. Add PD control to maintain standing configuration
-        3. (Future: Full WBC QP for optimal force distribution)
-
-        Args:
-            robot_state: Current robot state
-            gait_targets: Target foot positions
-            current_contact: Current contact state
-
-        Returns:
-            Joint torques {joint_name: torque}
+        - Compute desired base acceleration from task hierarchy and height PD
+        - Solve for ground reaction forces respecting contacts/friction
+        - Map contact forces through foot Jacobians to joint torques
+        - Add gravity compensation and mild damping
         """
-        # Get current joint states in proper order
-        joint_names_ordered = [
-            'leg_l1_joint', 'leg_l2_joint', 'leg_l3_joint', 'leg_l4_joint', 'leg_l5_joint',
-            'leg_r1_joint', 'leg_r2_joint', 'leg_r3_joint', 'leg_r4_joint', 'leg_r5_joint'
-        ]
-
-        joint_positions = []
-        joint_velocities = []
-
-        for joint_name in joint_names_ordered:
-            if joint_name in self.joint_dict:
-                joint_idx = self.joint_dict[joint_name]
-                state = p.getJointState(self.robot_id, joint_idx)
-                joint_positions.append(state[0])  # position
-                joint_velocities.append(state[1])  # velocity
-            else:
-                joint_positions.append(0.0)
-                joint_velocities.append(0.0)
-
-        joint_positions = np.array(joint_positions)
-        joint_velocities = np.array(joint_velocities)
-
-        # Get body orientation for active balance control
-        base_orn = robot_state['base_orn']
-        euler = p.getEulerFromQuaternion(base_orn)
-        roll, pitch, yaw = euler
-
-        # Active balance control: Adjust joints based on body orientation
-        # If robot leans forward (negative pitch), lean back at hips
-        # If robot leans backward (positive pitch), lean forward at hips
-        balance_gain_pitch = 0.5  # How aggressively to counter pitch (reduced)
-        balance_gain_roll = 0.2   # How aggressively to counter roll (reduced)
-
-        hip_pitch_adjustment = -balance_gain_pitch * pitch  # Counter-rotate pitch
-
-        # Also adjust based on angular velocity for damping
-        base_ang_vel = robot_state['base_ang_vel']
-        pitch_velocity = base_ang_vel[1]  # Pitch rate
-        roll_velocity = base_ang_vel[0]   # Roll rate
-
-        velocity_damping = 0.2
-        hip_pitch_velocity_comp = -velocity_damping * pitch_velocity
-
-        total_hip_pitch = hip_pitch_adjustment + hip_pitch_velocity_comp
-
-        # Roll balance: Adjust hip roll (shift weight side-to-side)
-        # If leaning left (positive roll), shift weight right
-        hip_roll_adjustment_left = -0.1 - balance_gain_roll * roll
-        hip_roll_adjustment_right = 0.1 - balance_gain_roll * roll
-
-        # Ankle balance: Use ankle pitch to adjust ZMP position
-        # Forward lean (negative pitch) → ankle dorsiflexion (positive) to shift ZMP forward
-        # Backward lean (positive pitch) → ankle plantarflexion (negative) to shift ZMP back
-        ankle_balance_gain = 0.3
-        ankle_pitch_adjustment = ankle_balance_gain * pitch  # Same direction as lean
-
-        # Target configuration with active balance adjustments
-        target_positions = np.array([
-            hip_roll_adjustment_left,  # leg_l1: hip roll with balance
-            0.0,   # leg_l2: hip yaw
-            total_hip_pitch,  # leg_l3: hip pitch with balance control
-            0.0,   # leg_l4: knee straight
-            ankle_pitch_adjustment,   # leg_l5: ankle with ZMP adjustment
-            hip_roll_adjustment_right,  # leg_r1: hip roll with balance
-            0.0,   # leg_r2: hip yaw
-            total_hip_pitch,  # leg_r3: hip pitch with balance control
-            0.0,   # leg_r4: knee straight
-            ankle_pitch_adjustment,   # leg_r5: ankle with ZMP adjustment
-        ])
-
-        # PD control to compute desired accelerations
-        # Very high gains for aggressive control
-        kp = 2000.0  # Position gain (increased 4x)
-        kd = 200.0   # Velocity gain (increased 4x)
-
-        position_error = target_positions - joint_positions
-        desired_accelerations = kp * position_error - kd * joint_velocities
-
-        # Compute torques using inverse dynamics: τ = M(q)q̈ + g(q)
-        try:
-            torques_array = self.inv_dyn.inverse_dynamics(
-                joint_positions,
-                joint_velocities,
-                desired_accelerations
-            )
-
-            # Convert to dictionary
-            torques = {}
-
-            for i, joint_name in enumerate(joint_names_ordered):
-                if i < len(torques_array):
-                    torques[joint_name] = float(torques_array[i])
-                else:
-                    torques[joint_name] = 0.0
-
-            return torques
-
-        except Exception as e:
-            print(f"Error computing torques: {e}")
-            # Fallback: return zero torques
+        if not self.is_active:
             return {name: 0.0 for name in self.joint_dict.keys()}
+
+        # Desired base accel from tasks (6D)
+        base_accel, _ = self.task_hierarchy.get_desired_acceleration()
+
+        # Height regulation toward target CoM height
+        height_error = self.walking_params.com_height_target - robot_state['com_pos'][2]
+        height_vel = robot_state['base_vel'][2]
+        base_accel[2] += (
+            self.walking_params.height_kp * height_error
+            - self.walking_params.height_kd * height_vel
+        )
+
+        # Contact state and foot positions
+        left_contact, right_contact = current_contact
+        foot_positions = [robot_state['left_foot_pos'], robot_state['right_foot_pos']]
+        contacts = [left_contact, right_contact]
+
+        # Solve for ground forces via WBC QP
+        ground_forces = self.wbc.compute_ground_reaction_forces(
+            desired_base_accel=base_accel,
+            foot_positions=foot_positions,
+            foot_contacts=contacts
+        )
+
+        # Foot Jacobians (linear) for actuated joints
+        foot_jacs = self._compute_contact_jacobians()
+
+        # Gravity compensation
+        joint_positions, joint_velocities = self._get_actuated_joint_states()
+        gravity_torques = self.inv_dyn.compute_gravity_torques(joint_positions)
+
+        # Map contact forces to joint torques: tau += J^T * f
+        contact_torques = np.zeros_like(gravity_torques)
+        for i, foot_name in enumerate(["left_foot", "right_foot"]):
+            if not contacts[i]:
+                continue
+            J = foot_jacs.get(foot_name)
+            if J is None:
+                continue
+            contact_torques += J.T @ ground_forces[i]
+
+        # Mild velocity damping to reduce chatter
+        damping = -0.5 * joint_velocities
+
+        total_torques = gravity_torques + contact_torques + damping
+        return self._map_torques_to_dict(total_torques)
 
     def _detect_and_handle_transitions(self, current_contact: Tuple[bool, bool]):
         """

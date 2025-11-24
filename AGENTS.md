@@ -11,7 +11,7 @@
 - Install: `pip install -r requirements.txt`.
 - Docker (recommended): `cd docker && docker-compose up -d`; run suite headless via `docker exec hunter-simulation bash /workspace/hunter/scripts/test_all_modes.sh`.
 - Local smoke: `python src/main_simulation.py --mode standing --duration 10 --no-gui`; swap `standing-mpc` or `wbc` for other validated modes.
-- Targeted: from `src/`, `python test_wbc_standing.py`, `python test_inverse_dynamics.py`, etc. Add new tests as `test_<feature>.py`.
+- Targeted: from `src/`, `python test_wbc_standing.py`, `python test_inverse_dynamics.py`, etc. Add new tests as `test_<feature>.py`. Optional walking smoke: `WALKING_SMOKE=1 bash scripts/test_all_modes.sh` (Phase 3, expect failures).
 
 ## Coding Style & Naming Conventions
 - Python 3 with 4-space indentation; add type hints and brief docstrings for control assumptions or constraints.

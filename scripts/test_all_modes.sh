@@ -40,6 +40,15 @@ python3 /workspace/hunter/src/main_simulation.py --mode walking --duration 3 --n
     grep -E "Final|Distance" | tail -3
 echo ""
 
+if [ "${WALKING_SMOKE:-0}" != "0" ]; then
+  echo "----------------------------------------------------------------------"
+  echo "[5/5] Walking smoke test (headless, 2s, Phase 3 WBC path)"
+  echo "----------------------------------------------------------------------"
+  python3 /workspace/hunter/src/main_simulation.py --mode walking --duration 2 --no-gui 2>&1 | \
+      grep -E "WARNING|Roll|Pitch|Final|Distance" | tail -5
+  echo ""
+fi
+
 echo "======================================================================"
 echo "SUMMARY"
 echo "======================================================================"
@@ -48,6 +57,10 @@ echo "✅ STANDING:     Should show Roll/Pitch < 5°"
 echo "✅ STANDING-MPC: Should show Roll/Pitch < 5°"
 echo "⚠️  WBC:          Falls (needs tuning)"
 echo "⚠️  WALKING:      Needs WBC redesign (see WALKING_MODE_INVESTIGATION.md)"
+if [ "${WALKING_SMOKE:-0}" != "0" ]; then
+  echo "ℹ️  WALKING-SMOKE: Enabled (short 2s headless check, may fail while Phase 3 is in progress)"
+  echo "     Run with: WALKING_SMOKE=1 bash scripts/test_all_modes.sh"
+fi
 echo ""
 echo "For detailed analysis, see:"
 echo "  - STABILITY_FIX.md (standing modes)"
