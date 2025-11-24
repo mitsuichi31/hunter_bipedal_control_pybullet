@@ -752,7 +752,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
     print("\nStarting simulation...")
     print(f"Duration: {duration}s")
     print(f"Gait: {gait_params.step_length*100:.0f}cm steps @ {gait_params.step_period}s period")
-    print(f"Note: Torque computation is placeholder - robot will maintain standing\n")
+    print(f"Control: Inverse dynamics (τ = M(q)q̈ + g(q)) with PD tracking\n")
 
     # Activate controller
     controller.start()
@@ -824,12 +824,14 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
     else:
         print("\n✗ UNSTABLE: Robot tilted beyond limits")
 
-    print("\nNote: Current implementation uses placeholder torques (zero).")
-    print("Full walking requires:")
-    print("  1. WBC QP solver integration")
-    print("  2. Inverse dynamics torque computation")
-    print("  3. Contact force optimization")
-    print("  4. Gait parameter tuning")
+    print("\nNote: Current implementation uses simplified torque computation:")
+    print("  ✅ Inverse dynamics: τ = M(q)q̈ + g(q)")
+    print("  ✅ Gravity compensation")
+    print("  ✅ PD control for joint tracking")
+    print("\nFuture improvements:")
+    print("  ⚠️ Full WBC QP solver for contact force optimization")
+    print("  ⚠️ Task-space control (foot trajectory tracking)")
+    print("  ⚠️ Gait parameter tuning")
     print("\nSee PHASE3_WALKING_PLAN.md for details.")
     print("="*70)
 

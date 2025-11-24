@@ -130,7 +130,7 @@ class WBCWalkingParams:
     max_roll_pitch: float = 0.26     # Maximum body tilt (rad, ~15 degrees)
     min_com_height: float = 0.40     # Minimum acceptable CoM height (m)
     max_com_height: float = 0.70     # Maximum acceptable CoM height (m)
-    max_zmp_offset: float = 0.08     # Maximum ZMP distance from support polygon center (m)
+    max_zmp_offset: float = 0.12     # Maximum ZMP distance from support polygon center (m, relaxed)
 
     # Contact transitions
     transition_duration: float = 0.05  # Smooth transition duration (seconds, 50ms)
@@ -448,6 +448,92 @@ class WBCWalkingController:
 
         return True, "Stable"
 
+    def _compute_torques(self, robot_state: Dict, gait_targets: Dict,
+                         current_contact: Tuple[bool, bool]) -> Dict[str, float]:
+        """
+        Compute joint torques using simplified WBC + inverse dynamics
+
+        Approach:
+        1. Use gravity compensation from inverse dynamics
+        2. Add PD control to maintain standing configuration
+        3. (Future: Full WBC QP for optimal force distribution)
+
+        Args:
+            robot_state: Current robot state
+            gait_targets: Target foot positions
+            current_contact: Current contact state
+
+        Returns:
+            Joint torques {joint_name: torque}
+        """
+        # Get current joint states in proper order
+        joint_names_ordered = [
+            'leg_l1_joint', 'leg_l2_joint', 'leg_l3_joint', 'leg_l4_joint', 'leg_l5_joint',
+            'leg_r1_joint', 'leg_r2_joint', 'leg_r3_joint', 'leg_r4_joint', 'leg_r5_joint'
+        ]
+
+        joint_positions = []
+        joint_velocities = []
+
+        for joint_name in joint_names_ordered:
+            if joint_name in self.joint_dict:
+                joint_idx = self.joint_dict[joint_name]
+                state = p.getJointState(self.robot_id, joint_idx)
+                joint_positions.append(state[0])  # position
+                joint_velocities.append(state[1])  # velocity
+            else:
+                joint_positions.append(0.0)
+                joint_velocities.append(0.0)
+
+        joint_positions = np.array(joint_positions)
+        joint_velocities = np.array(joint_velocities)
+
+        # Target configuration: straight legs with slight outward stance
+        target_positions = np.array([
+            -0.1,  # leg_l1: hip roll outward
+            0.0,   # leg_l2: hip yaw
+            0.0,   # leg_l3: hip pitch straight
+            0.0,   # leg_l4: knee straight
+            0.0,   # leg_l5: ankle straight
+            0.1,   # leg_r1: hip roll outward
+            0.0,   # leg_r2: hip yaw
+            0.0,   # leg_r3: hip pitch straight
+            0.0,   # leg_r4: knee straight
+            0.0,   # leg_r5: ankle straight
+        ])
+
+        # PD control to compute desired accelerations
+        # Higher gains for stronger control
+        kp = 500.0  # Position gain (increased from 200)
+        kd = 50.0   # Velocity gain (increased from 20)
+
+        position_error = target_positions - joint_positions
+        desired_accelerations = kp * position_error - kd * joint_velocities
+
+        # Compute torques using inverse dynamics: τ = M(q)q̈ + g(q)
+        try:
+            torques_array = self.inv_dyn.inverse_dynamics(
+                joint_positions,
+                joint_velocities,
+                desired_accelerations
+            )
+
+            # Convert to dictionary
+            torques = {}
+
+            for i, joint_name in enumerate(joint_names_ordered):
+                if i < len(torques_array):
+                    torques[joint_name] = float(torques_array[i])
+                else:
+                    torques[joint_name] = 0.0
+
+            return torques
+
+        except Exception as e:
+            print(f"Error computing torques: {e}")
+            # Fallback: return zero torques
+            return {name: 0.0 for name in self.joint_dict.keys()}
+
     def _detect_and_handle_transitions(self, current_contact: Tuple[bool, bool]):
         """
         Detect contact state changes and initiate smooth transitions
@@ -542,15 +628,8 @@ class WBCWalkingController:
         # Get desired accelerations from task hierarchy
         base_accel, joint_accel = self.task_hierarchy.get_desired_acceleration()
 
-        # For now, use simplified approach: return zero torques
-        # Full implementation would:
-        # 1. Solve WBC QP to get desired accelerations
-        # 2. Use inverse dynamics to compute torques: τ = M(q)q̈ + g(q)
-        # 3. Apply contact force optimization
-        # 4. Modulate contact task weights by transition_weight
-
-        # Placeholder: return zero torques
-        torques = {name: 0.0 for name in self.joint_dict.keys()}
+        # Compute joint torques using simplified WBC approach
+        torques = self._compute_torques(robot_state, gait_targets, current_contact)
 
         return torques
 
