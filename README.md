@@ -75,6 +75,10 @@ PyBulletを使用したHunter 2足歩行ロボットのシミュレーション�
 
 詳細は [PHASE3_WALKING_PLAN.md](PHASE3_WALKING_PLAN.md) を参照してください。
 
+## 貢献者向けガイド
+
+コントリビューション手順やテスト・命名規約は [AGENTS.md](AGENTS.md) にまとめています。
+
 ## プロジェクト構成
 
 ```
