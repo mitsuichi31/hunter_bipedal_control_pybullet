@@ -196,8 +196,47 @@ Scope: Walking-mode stability investigation with `WALKING_WBC=1`
 - Forces: 75-76 N/foot (stable, balanced)
 - Torques: ~4.4 Nm (well below limits)
 
+---
+
+### Test #6: Full Torque Control with Enhanced Solver ❌
+**Objective:** Test if enhanced contact solver enables full torque control (all 10 joints)
+
+**Setup:**
+- WBC_TORQUE_CONTROL=1 with enhanced contact solver
+- Same foot anchoring: w=10, kp=300, kd=100
+- All joints (hips, knees, ankles) use torque control
+
+**Results:**
+- ❌ **FAILED** - Robot fell at t=2.0s
+- Final state: h=0.136m, Roll=-180°, Pitch=-47.4° (flipped over)
+- Contact loss at t=0.06s (force_norms=[0, 0])
+- Forces oscillating: 0-140 N (should be steady ~62 N/foot)
+- Torques saturating at 20 Nm limit
+- Unclipped posture torques reaching 107+ Nm
+
+**Comparison to Hybrid Control:**
+| Mode | Joints on Torque | Duration | Outcome |
+|------|-----------------|----------|---------|
+| Hybrid | 2 (ankles only) | 30+ seconds | ✅ STABLE |
+| Full Torque | 10 (all joints) | 2 seconds | ❌ FAIL |
+
+**Conclusion:** Full torque control on all 10 joints creates control instability that the enhanced contact solver cannot overcome. The hybrid approach provides better stability by limiting torque control to ankles only, while hips/knees use more robust position control.
+
+---
+
+## REVISED RECOMMENDATIONS (2025-01-30)
+
+**What Works:**
+- ✅ **Hybrid WBC Control** - Position on hips/knees, torque on ankles (30+ sec stable)
+- ✅ Enhanced PyBullet contact solver (200 iterations, 4 substeps, tight breaking threshold)
+- ✅ Cartesian foot stiffness (w=10, kp=300, kd=100)
+
+**What Doesn't Work:**
+- ❌ Full torque control on all 10 joints (fails in ~2s)
+- ❌ Pure torque control without hybrid split
+
 ## Next Steps (Walking Mode)
-1) **Apply enhanced contact solver to WALKING_WBC=1** - Test if walking mode benefits from same settings
-2) **Test full torque control mode** - Try `WBC_TORQUE_CONTROL=1` with enhanced solver (not just hybrid)
-3) **Implement contact state transitions** - Handle swing phase and contact switching smoothly
-4) **Add swing foot trajectory tracking** - WBC task for swing foot position/velocity control
+1) **Apply enhanced contact solver + hybrid control to WALKING_WBC=1** - Use hybrid approach for walking
+2) **Implement contact state transitions** - Handle swing phase and contact switching smoothly
+3) **Add swing foot trajectory tracking** - WBC task for swing foot position/velocity control
+4) **Consider higher-level hybrid strategy** - Position control during transitions, torque during stable phases
