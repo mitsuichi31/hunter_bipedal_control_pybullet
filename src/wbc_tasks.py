@@ -68,8 +68,27 @@ class TaskHierarchy:
         base_accel = np.zeros(6)
 
         for task in self.tasks:
-            if task.jacobian.shape[1] == 6:  # Base task
-                base_accel += task.weight / total_weight * task.desired_accel
+            # Get task desired acceleration
+            task_accel = task.desired_accel
+
+            # Handle different task dimensions
+            if len(task_accel) == 6:
+                # Full 6D base acceleration (linear + angular)
+                base_accel += task.weight / total_weight * task_accel
+            elif len(task_accel) == 3:
+                # 3D acceleration (position only, or angular only)
+                # Check if it's a position task (based on jacobian structure)
+                if task.jacobian.shape[0] == 3:
+                    # Assume it's linear position
+                    base_accel[:3] += task.weight / total_weight * task_accel
+                else:
+                    # Otherwise add to full 6D (will be zeros for unused dims)
+                    pass
+            elif len(task_accel) == 2:
+                # 2D acceleration (horizontal position only, e.g., CoM tracking)
+                base_accel[:2] += task.weight / total_weight * task_accel
+            # Note: Foot tasks (swing/stance) don't contribute to base_accel
+            # They would be handled via WBC QP solve in full implementation
 
         # Joint acceleration (placeholder)
         joint_accel = np.zeros(0)

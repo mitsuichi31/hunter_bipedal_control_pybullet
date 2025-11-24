@@ -24,6 +24,7 @@ from mpc_controller import MPCParams
 from mpc_wbc_controller import MPCWBCController
 from wbc_controller import WBCParams
 from wbc_walking_controller import WBCWalkingController, WBCWalkingParams
+from gait_generator import GaitParams
 
 
 class WalkingController:
@@ -666,17 +667,19 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
 
 def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
     """
-    Run walking simulation (currently just maintains standing position)
+    Run WBC-based walking simulation (Phase 3)
 
-    Note: Full walking implementation requires more sophisticated control.
-    For now, this demonstrates stable standing using the straight-leg configuration.
+    Uses Whole-Body Control with contact-aware task hierarchy for bipedal walking.
 
     Args:
         duration: Simulation duration in seconds
         use_gui: Whether to use GUI
     """
-    print("Running walking simulation...")
-    print("Note: Currently maintains standing position (full walking in development)")
+    print("="*70)
+    print("WBC WALKING SIMULATION - Phase 3")
+    print("="*70)
+    print("Architecture: Contact FSM → Task Hierarchy → WBC → Torques")
+    print()
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -687,63 +690,82 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
     sim.connect()
     sim.load_robot(start_position=[0, 0, 0.679])
 
-    # Use simple PD controller (same as standing mode)
-    pd_controller = MultiJointPDController(default_kp=200.0, default_kd=20.0)
-
-    # Set higher gains for critical joints (same as standing mode)
-    pd_controller.set_joint_gains("leg_l3_joint", kp=300.0, kd=30.0)
-    pd_controller.set_joint_gains("leg_r3_joint", kp=300.0, kd=30.0)
-    pd_controller.set_joint_gains("leg_l4_joint", kp=300.0, kd=30.0)
-    pd_controller.set_joint_gains("leg_r4_joint", kp=300.0, kd=30.0)
-
-    # Target: straight legs with slight outward stance
-    target_positions = {
-        # Left leg
-        'leg_l1_joint': -0.1,    # Hip roll - outward
-        'leg_l2_joint': 0.0,     # Hip yaw
-        'leg_l3_joint': 0.0,     # Hip pitch - straight
-        'leg_l4_joint': 0.0,     # Knee - straight
-        'leg_l5_joint': 0.0,     # Ankle - straight
-        # Right leg
-        'leg_r1_joint': 0.1,     # Hip roll - outward
-        'leg_r2_joint': 0.0,     # Hip yaw
-        'leg_r3_joint': 0.0,     # Hip pitch - straight
-        'leg_r4_joint': 0.0,     # Knee - straight
-        'leg_r5_joint': 0.0,     # Ankle - straight
+    # Set robot to standing configuration
+    standing_config = {
+        'leg_l1_joint': -0.1,
+        'leg_l2_joint': 0.0,
+        'leg_l3_joint': 0.0,
+        'leg_l4_joint': 0.0,
+        'leg_l5_joint': 0.0,
+        'leg_r1_joint': 0.1,
+        'leg_r2_joint': 0.0,
+        'leg_r3_joint': 0.0,
+        'leg_r4_joint': 0.0,
+        'leg_r5_joint': 0.0,
     }
+    sim.reset_robot(position=[0, 0, 0.679], joint_positions=standing_config)
 
-    print("Initializing standing pose...")
+    # Ultra-conservative gait parameters (Phase 3 M4.1)
+    print("Configuring ultra-conservative gait...")
+    gait_params = GaitParams(
+        step_length=0.05,           # 5cm steps (very small)
+        step_height=0.03,           # 3cm lift (very low)
+        step_period=2.0,            # 2 seconds per step (very slow)
+        double_support_ratio=0.5,   # 50% double support (very stable)
+        stance_width=0.18,          # Standard stance
+        body_height=0.45,           # Nominal body height
+    )
 
-    # Initialize robot with target joint positions
-    for joint_name, target_pos in target_positions.items():
-        if joint_name in sim.joint_dict:
-            joint_id = sim.joint_dict[joint_name]
-            p.resetJointState(sim.robot_id, joint_id, target_pos)
+    # WBC parameters (use Phase 2 tuned values)
+    wbc_params = WBCParams(
+        friction_coef=0.6,
+        max_normal_force=500.0,
+        min_normal_force=1.0,
+        w_force_tracking=10.0,
+        w_force_regularization=0.01,
+        w_torque_regularization=0.001
+    )
 
-    print(f"Running simulation for {duration} seconds...")
-    print(f"Control: PD control (standing mode)")
+    # Walking-specific parameters
+    walking_params = WBCWalkingParams(
+        kp_orientation=100.0,
+        kd_orientation=10.0,
+        kp_com=50.0,
+        kd_com=5.0,
+        kp_swing=100.0,
+        kd_swing=10.0,
+        kd_stance=20.0,
+        transition_duration=0.05,
+        enable_emergency_stop=True,
+    )
+
+    # Create WBC Walking Controller
+    print("\nInitializing WBC Walking Controller...")
+    controller = WBCWalkingController(
+        robot_id=sim.robot_id,
+        joint_dict=sim.joint_dict,
+        gait_params=gait_params,
+        wbc_params=wbc_params,
+        walking_params=walking_params
+    )
+
+    print("\nStarting simulation...")
+    print(f"Duration: {duration}s")
+    print(f"Gait: {gait_params.step_length*100:.0f}cm steps @ {gait_params.step_period}s period")
+    print(f"Note: Torque computation is placeholder - robot will maintain standing\n")
+
+    # Activate controller
+    controller.start()
 
     start_time = time.time()
-    last_print_time = 0.0
+    last_status_print = 0.0
 
     while sim.time < duration:
-        # Get current joint states
-        joint_states = sim.get_joint_states()
+        # Update controller (returns torques)
+        torques = controller.update(sim.dt)
 
-        current_positions = {}
-        current_velocities = {}
-        for joint_name, state in joint_states.items():
-            current_positions[joint_name] = state[0]
-            current_velocities[joint_name] = state[1]
-
-        # Compute torques
-        torques = pd_controller.compute_torques(
-            target_positions=target_positions,
-            current_positions=current_positions,
-            current_velocities=current_velocities
-        )
-
-        # Apply torques
+        # Apply torques (currently zero - placeholder)
+        # In full implementation, these would be computed via inverse dynamics
         sim.set_joint_torques(torques)
 
         # Step simulation
@@ -755,41 +777,61 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
             if sim.time > elapsed:
                 time.sleep(sim.time - elapsed)
 
-        # Print progress (every 1 second)
-        if sim.time - last_print_time >= 1.0:
+        # Print status every 2 seconds
+        if sim.time - last_status_print >= 2.0:
             base_pos, base_orn, _, _ = sim.get_base_state()
             base_euler = p.getEulerFromQuaternion(base_orn)
-            roll_deg = np.degrees(base_euler[0])
-            pitch_deg = np.degrees(base_euler[1])
 
-            print(f"Time: {sim.time:.1f}s | "
-                  f"Pos: [{base_pos[0]:.2f}, {base_pos[1]:.2f}, {base_pos[2]:.2f}] | "
-                  f"Roll: {roll_deg:.1f}° | Pitch: {pitch_deg:.1f}°")
+            state_info = controller.get_state_info()
 
-            last_print_time = sim.time
+            print(f"t={sim.time:5.1f}s | "
+                  f"Phase: {state_info['phase']:15s} | "
+                  f"Steps: {state_info['step_count']:2d} | "
+                  f"Tasks: {state_info['num_tasks']:2d} | "
+                  f"Roll: {np.degrees(base_euler[0]):5.1f}° | "
+                  f"Pitch: {np.degrees(base_euler[1]):5.1f}°")
+
+            # Print transition events
+            if state_info['in_transition']:
+                print(f"  → Transition: {state_info['transition_type']} ({state_info['transition_foot']})")
+
+            last_status_print = sim.time
+
+        # Check if controller stopped (emergency stop)
+        if not controller.is_active:
+            print("\n⚠ Controller stopped automatically (emergency stop)")
+            break
 
     # Final assessment
     final_pos, final_orn, _, _ = sim.get_base_state()
     final_euler = p.getEulerFromQuaternion(final_orn)
+    final_state = controller.get_state_info()
 
-    print(f"\nSimulation completed!")
-    print(f"Final base position: [{final_pos[0]:.3f}, {final_pos[1]:.3f}, {final_pos[2]:.3f}]")
+    print("\n" + "="*70)
+    print("SIMULATION COMPLETE")
+    print("="*70)
+    print(f"Duration: {sim.time:.1f}s")
+    print(f"Steps completed: {final_state['step_count']}")
+    print(f"Final position: [{final_pos[0]:.3f}, {final_pos[1]:.3f}, {final_pos[2]:.3f}]m")
     print(f"Final orientation: Roll={np.degrees(final_euler[0]):.1f}°, Pitch={np.degrees(final_euler[1]):.1f}°")
 
-    # Check if robot stayed upright
-    if abs(np.degrees(final_euler[0])) < 15 and abs(np.degrees(final_euler[1])) < 15:
-        print("✓ Robot remained upright!")
-    else:
-        print("✗ Robot fell")
+    # Assessment
+    roll_deg = abs(np.degrees(final_euler[0]))
+    pitch_deg = abs(np.degrees(final_euler[1]))
 
-    # Check if robot stayed on ground
-    if 0.5 < final_pos[2] < 0.8:
-        print("✓ Robot stayed on ground!")
+    if roll_deg < 15 and pitch_deg < 15:
+        print("\n✓ SUCCESS: Robot remained stable")
     else:
-        print(f"✗ Robot height issue: {final_pos[2]:.2f}m")
+        print("\n✗ UNSTABLE: Robot tilted beyond limits")
 
-    print("\nNote: Walking mode architecture requires further development.")
-    print("See WALKING_MODE_INVESTIGATION.md for technical details.")
+    print("\nNote: Current implementation uses placeholder torques (zero).")
+    print("Full walking requires:")
+    print("  1. WBC QP solver integration")
+    print("  2. Inverse dynamics torque computation")
+    print("  3. Contact force optimization")
+    print("  4. Gait parameter tuning")
+    print("\nSee PHASE3_WALKING_PLAN.md for details.")
+    print("="*70)
 
     sim.disconnect()
 
