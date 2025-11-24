@@ -201,10 +201,109 @@ def create_com_tracking_task(
     )
 
 
+def create_swing_foot_task(
+    foot_name: str,
+    current_pos: np.ndarray,
+    desired_pos: np.ndarray,
+    current_vel: np.ndarray,
+    desired_vel: np.ndarray = None,
+    foot_jacobian: np.ndarray = None,
+    kp: float = 100.0,
+    kd: float = 10.0
+) -> Task:
+    """
+    Create task for swing foot trajectory tracking
+
+    Args:
+        foot_name: Name of foot ("left" or "right")
+        current_pos: Current foot position [x, y, z]
+        desired_pos: Desired foot position [x, y, z]
+        current_vel: Current foot velocity [vx, vy, vz]
+        desired_vel: Desired foot velocity [vx, vy, vz] (optional)
+        foot_jacobian: Foot Jacobian matrix (if available)
+        kp: Proportional gain
+        kd: Derivative gain
+
+    Returns:
+        Task for swing foot tracking
+    """
+    if desired_vel is None:
+        desired_vel = np.zeros(3)
+
+    # Position and velocity errors
+    pos_error = desired_pos - current_pos
+    vel_error = desired_vel - current_vel
+
+    # PD control in task space
+    desired_accel = kp * pos_error + kd * vel_error
+
+    # Jacobian (use provided or identity as placeholder)
+    if foot_jacobian is not None:
+        jacobian = foot_jacobian
+    else:
+        # Placeholder: 3x3 identity (simplified)
+        jacobian = np.eye(3)
+
+    return Task(
+        name=f"swing_foot_{foot_name}",
+        priority=2,  # Lower priority than body orientation/CoM
+        weight=50.0,  # High weight for accurate tracking
+        jacobian=jacobian,
+        desired_accel=desired_accel
+    )
+
+
+def create_stance_foot_constraint(
+    foot_name: str,
+    foot_velocity: np.ndarray,
+    foot_jacobian: np.ndarray = None,
+    kd: float = 20.0
+) -> Task:
+    """
+    Create constraint for stance foot (zero velocity)
+
+    This is a high-priority constraint that keeps the stance foot
+    fixed on the ground with zero velocity.
+
+    Args:
+        foot_name: Name of foot ("left" or "right")
+        foot_velocity: Current foot velocity [vx, vy, vz, wx, wy, wz]
+        foot_jacobian: Foot Jacobian matrix (if available)
+        kd: Damping gain to drive velocity to zero
+
+    Returns:
+        Task for stance foot constraint
+    """
+    # Desired acceleration to drive velocity to zero
+    # a_des = -kd * v_current (critically damped)
+    desired_accel = -kd * foot_velocity
+
+    # Jacobian (use provided or identity as placeholder)
+    if foot_jacobian is not None:
+        jacobian = foot_jacobian
+    else:
+        # Placeholder: 6x6 identity (3 linear + 3 angular)
+        jacobian = np.eye(6)
+
+    return Task(
+        name=f"stance_foot_{foot_name}",
+        priority=0,  # Highest priority - MUST satisfy
+        weight=100.0,  # Very high weight (constraint)
+        jacobian=jacobian,
+        desired_accel=desired_accel
+    )
+
+
 if __name__ == "__main__":
     print("WBC Task Hierarchy Module")
     print("\nAvailable task types:")
     print("1. Body orientation control")
     print("2. Body position control")
     print("3. CoM tracking")
+    print("4. Swing foot tracking (NEW - Phase 3)")
+    print("5. Stance foot constraint (NEW - Phase 3)")
+    print("\nPriority levels:")
+    print("  Priority 0 (Highest): Stance foot constraints")
+    print("  Priority 1: Body orientation/position, CoM tracking")
+    print("  Priority 2: Swing foot tracking")
     print("\nUsage: Create tasks and add to TaskHierarchy")

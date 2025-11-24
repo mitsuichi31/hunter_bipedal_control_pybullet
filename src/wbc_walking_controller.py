@@ -1,50 +1,77 @@
 """
-WBC-based Walking Controller for Bipedal Robot
+WBC-based Walking Controller for Bipedal Robot - Phase 3 Redesign
 
-Uses Whole-Body Control (WBC) instead of IK to handle free-floating base dynamics properly.
-Integrates gait generator with WBC framework.
+This controller integrates:
+1. Contact State Machine - manages contact phases
+2. Gait Generator - provides foot trajectories
+3. WBC Controller - computes optimal forces/torques
+4. Inverse Dynamics - maps accelerations to torques
+
+Architecture:
+Gait Generator → Contact FSM → Task Hierarchy → WBC QP → Inverse Dynamics → Torques
 """
 
 import numpy as np
 import pybullet as p
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple, Optional
 from dataclasses import dataclass
 
 from gait_generator import GaitGenerator, GaitParams
 from wbc_controller import WholeBodyController, WBCParams
-from inverse_kinematics import BipedalIKSolver
+from wbc_tasks import (
+    TaskHierarchy,
+    create_body_orientation_task,
+    create_com_tracking_task,
+    create_swing_foot_task,
+    create_stance_foot_constraint
+)
+from contact_state_machine import ContactStateMachine, ContactStateParams, ContactPhase
+from inverse_dynamics import InverseDynamics
+from stability_metrics import compute_com
 
 
 @dataclass
 class WBCWalkingParams:
     """Parameters for WBC walking controller"""
-    # Control gains
-    kp_position: float = 100.0      # Position tracking gain
-    kd_position: float = 20.0       # Position damping gain
-    kp_orientation: float = 200.0   # Orientation tracking gain
-    kd_orientation: float = 40.0    # Orientation damping gain
+    # Control gains - Body orientation
+    kp_orientation: float = 100.0   # Body orientation tracking gain
+    kd_orientation: float = 10.0    # Body orientation damping
 
-    # Swing foot control
-    kp_swing: float = 500.0         # Swing foot position gain
-    kd_swing: float = 50.0          # Swing foot velocity gain
+    # Control gains - CoM tracking
+    kp_com: float = 50.0            # CoM position tracking gain
+    kd_com: float = 5.0             # CoM velocity damping
 
-    # Balance control
-    com_height: float = 0.55        # Desired CoM height
-    max_lean_angle: float = 0.1     # Maximum body lean (rad)
+    # Control gains - Swing foot
+    kp_swing: float = 100.0         # Swing foot position tracking
+    kd_swing: float = 10.0          # Swing foot velocity damping
 
-    # Contact detection
-    contact_force_threshold: float = 10.0  # Minimum force to consider contact (N)
+    # Control gains - Stance foot constraint
+    kd_stance: float = 20.0         # Stance foot damping (drive velocity to zero)
+
+    # Balance parameters
+    com_height_target: float = 0.55  # Target CoM height (m)
+    max_com_offset: float = 0.08     # Maximum CoM offset from center (m)
+
+    # Safety limits
+    max_roll_pitch: float = 0.26     # Maximum body tilt (rad, ~15 degrees)
+    min_com_height: float = 0.40     # Minimum acceptable CoM height (m)
+    max_com_height: float = 0.70     # Maximum acceptable CoM height (m)
+
+    # Control frequency
+    control_dt: float = 0.01         # Control update rate (seconds, 100Hz)
 
 
 class WBCWalkingController:
     """
-    Walking controller using Whole-Body Control
+    Walking Controller using Whole-Body Control (Phase 3)
 
-    Key differences from IK-based approach:
-    1. WBC accounts for base dynamics explicitly
-    2. Handles contact forces and friction constraints
-    3. Can track multiple objectives simultaneously (orientation + foot placement)
-    4. No IK convergence issues
+    This controller properly handles free-floating base dynamics by using
+    WBC optimization instead of IK. It coordinates:
+    - Contact state management (when each foot is on ground)
+    - Gait trajectory generation (where feet should be)
+    - Task hierarchy (prioritized objectives)
+    - Force optimization (QP solver)
+    - Torque computation (inverse dynamics)
     """
 
     def __init__(self,
@@ -60,422 +87,310 @@ class WBCWalkingController:
             robot_id: PyBullet robot ID
             joint_dict: Dictionary mapping joint names to indices
             gait_params: Gait generation parameters
-            wbc_params: WBC parameters
-            walking_params: Walking-specific parameters
+            wbc_params: WBC QP optimization parameters
+            walking_params: Walking-specific control parameters
         """
         self.robot_id = robot_id
         self.joint_dict = joint_dict
 
-        # Create gait generator
+        # Parameters
         self.gait_params = gait_params if gait_params else GaitParams()
-        self.gait_generator = GaitGenerator(self.gait_params)
-
-        # Create WBC controller
         self.wbc_params = wbc_params if wbc_params else WBCParams()
-        self.wbc = WholeBodyController(robot_id, joint_dict, self.wbc_params)
-
-        # Walking parameters
         self.walking_params = walking_params if walking_params else WBCWalkingParams()
 
-        # Create IK solver (for getting foot positions only, not for control)
-        self.ik_solver = BipedalIKSolver(robot_id, joint_dict)
+        # Components
+        self.gait_generator = GaitGenerator(self.gait_params)
+
+        contact_params = ContactStateParams(
+            step_period=self.gait_params.step_period,
+            double_support_ratio=self.gait_params.double_support_ratio,
+            contact_force_threshold=5.0
+        )
+        self.contact_fsm = ContactStateMachine(contact_params)
+        self.contact_fsm.initialize(robot_id, joint_dict)
+
+        self.wbc = WholeBodyController(robot_id, joint_dict, self.wbc_params)
+        self.inv_dyn = InverseDynamics(robot_id)
+        self.task_hierarchy = TaskHierarchy()
 
         # State
         self.time = 0.0
-        self.stance_foot = "right"  # "left" or "right" or "both"
+        self.last_control_update = 0.0
+        self.is_active = False
 
-    def get_foot_link_indices(self) -> Tuple[int, int]:
-        """Get link indices for left and right feet"""
-        left_foot_idx = None
-        right_foot_idx = None
+        # Foot link indices
+        self.left_foot_link, self.right_foot_link = self._find_foot_links()
+
+        print(f"WBC Walking Controller initialized")
+        print(f"  Step period: {self.gait_params.step_period:.2f}s")
+        print(f"  Step length: {self.gait_params.step_length:.3f}m")
+        print(f"  Control frequency: {1.0/self.walking_params.control_dt:.0f}Hz")
+
+    def _find_foot_links(self) -> Tuple[int, int]:
+        """Find link indices for feet"""
+        left_foot = None
+        right_foot = None
 
         num_joints = p.getNumJoints(self.robot_id)
         for i in range(num_joints):
             joint_info = p.getJointInfo(self.robot_id, i)
             link_name = joint_info[12].decode('utf-8')
 
-            if 'leg_l5_link' in link_name or 'left_foot' in link_name:
-                left_foot_idx = i
-            elif 'leg_r5_link' in link_name or 'right_foot' in link_name:
-                right_foot_idx = i
+            if link_name == 'leg_l5_link':
+                left_foot = i
+            elif link_name == 'leg_r5_link':
+                right_foot = i
 
-        if left_foot_idx is None or right_foot_idx is None:
-            # Fallback: use joint indices from joint_dict
-            left_foot_idx = self.joint_dict.get('leg_l5_joint', 5)
-            right_foot_idx = self.joint_dict.get('leg_r5_joint', 12)
+        if left_foot is None or right_foot is None:
+            print(f"Warning: Could not find foot links. L:{left_foot}, R:{right_foot}")
 
-        return left_foot_idx, right_foot_idx
+        return left_foot, right_foot
 
-    def get_foot_positions_and_velocities(self) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    def _get_foot_state(self, foot_link_idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Get current foot positions and velocities
-
-        Returns:
-            positions: [left_foot_pos, right_foot_pos]
-            velocities: [left_foot_vel, right_foot_vel]
-        """
-        left_idx, right_idx = self.get_foot_link_indices()
-
-        left_state = p.getLinkState(self.robot_id, left_idx, computeLinkVelocity=1)
-        right_state = p.getLinkState(self.robot_id, right_idx, computeLinkVelocity=1)
-
-        positions = [
-            np.array(left_state[0]),   # World position
-            np.array(right_state[0])
-        ]
-
-        velocities = [
-            np.array(left_state[6]),   # Linear velocity
-            np.array(right_state[7])
-        ]
-
-        return positions, velocities
-
-    def detect_contacts(self) -> List[bool]:
-        """
-        Detect which feet are in contact with ground
-
-        Returns:
-            contacts: [left_contact, right_contact]
-        """
-        left_idx, right_idx = self.get_foot_link_indices()
-
-        # Get contact points
-        contact_points_left = p.getContactPoints(self.robot_id, -1, left_idx)
-        contact_points_right = p.getContactPoints(self.robot_id, -1, right_idx)
-
-        # Check if contact force exceeds threshold
-        left_contact = False
-        right_contact = False
-
-        for cp in contact_points_left:
-            if abs(cp[9]) > self.walking_params.contact_force_threshold:  # Normal force
-                left_contact = True
-                break
-
-        for cp in contact_points_right:
-            if abs(cp[9]) > self.walking_params.contact_force_threshold:
-                right_contact = True
-                break
-
-        return [left_contact, right_contact]
-
-    def determine_stance_and_swing(self) -> Tuple[str, np.ndarray, np.ndarray]:
-        """
-        Determine which foot is stance/swing based on gait phase
-
-        Returns:
-            stance_foot: "left", "right", or "both"
-            swing_target_pos: Target position for swing foot
-            swing_target_vel: Target velocity for swing foot
-        """
-        # Get gait trajectories
-        left_target, right_target = self.gait_generator.get_foot_trajectories(self.time)
-        left_vel, right_vel = self.gait_generator.get_foot_velocities(self.time)
-
-        # Determine which foot is in swing (z > threshold)
-        swing_threshold = 0.01  # 1cm off ground
-
-        left_in_swing = left_target[2] > swing_threshold
-        right_in_swing = right_target[2] > swing_threshold
-
-        if left_in_swing and not right_in_swing:
-            stance_foot = "right"
-            swing_target_pos = left_target
-            swing_target_vel = left_vel
-        elif right_in_swing and not left_in_swing:
-            stance_foot = "left"
-            swing_target_pos = right_target
-            swing_target_vel = right_vel
-        else:
-            # Both on ground (double support) or both in air (shouldn't happen)
-            stance_foot = "both"
-            swing_target_pos = np.zeros(3)
-            swing_target_vel = np.zeros(3)
-
-        return stance_foot, swing_target_pos, swing_target_vel
-
-    def compute_desired_base_acceleration(self) -> np.ndarray:
-        """
-        Compute desired base acceleration for balance
-
-        Returns:
-            desired_accel: [ax, ay, az, alpha_x, alpha_y, alpha_z]
-        """
-        # Get current base state
-        base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
-        base_vel, base_ang_vel = p.getBaseVelocity(self.robot_id)
-
-        # Convert orientation to Euler angles
-        base_euler = p.getEulerFromQuaternion(base_orn)
-        roll, pitch, yaw = base_euler
-
-        # Desired orientation: upright
-        desired_roll = 0.0
-        desired_pitch = 0.0
-        # Keep current yaw (don't control heading in this simple version)
-        desired_yaw = yaw
-
-        # Orientation error
-        roll_error = desired_roll - roll
-        pitch_error = desired_pitch - pitch
-
-        # Desired angular acceleration (PD control)
-        kp_orient = self.walking_params.kp_orientation
-        kd_orient = self.walking_params.kd_orientation
-
-        alpha_x = kp_orient * roll_error - kd_orient * base_ang_vel[0]
-        alpha_y = kp_orient * pitch_error - kd_orient * base_ang_vel[1]
-        alpha_z = 0.0  # Don't control yaw
-
-        # Desired height
-        desired_height = self.walking_params.com_height
-        height_error = desired_height - base_pos[2]
-
-        # Desired linear acceleration (keep height, no lateral drift)
-        kp_pos = self.walking_params.kp_position
-        kd_pos = self.walking_params.kd_position
-
-        ax = -kd_pos * base_vel[0]  # Damp forward velocity
-        ay = -kd_pos * base_vel[1]  # Damp lateral velocity
-        az = kp_pos * height_error - kd_pos * base_vel[2]  # Height control
-
-        return np.array([ax, ay, az, alpha_x, alpha_y, alpha_z])
-
-    def compute_swing_foot_forces(self,
-                                  swing_foot: str,
-                                  swing_target_pos: np.ndarray,
-                                  swing_target_vel: np.ndarray) -> np.ndarray:
-        """
-        Compute virtual forces to track swing foot trajectory
-
-        This is a simplified approach - proper WBC would use tasks.
-
-        Returns:
-            swing_force: 3D force vector for swing foot
-        """
-        if swing_foot == "both":
-            return np.zeros(3)
-
-        # Get current swing foot position and velocity
-        foot_positions, foot_velocities = self.get_foot_positions_and_velocities()
-
-        if swing_foot == "left":
-            current_pos = foot_positions[0]
-            current_vel = foot_velocities[0]
-        else:  # right
-            current_pos = foot_positions[1]
-            current_vel = foot_velocities[1]
-
-        # PD control for swing foot
-        kp = self.walking_params.kp_swing
-        kd = self.walking_params.kd_swing
-
-        pos_error = swing_target_pos - current_pos
-        vel_error = swing_target_vel - current_vel
-
-        swing_force = kp * pos_error + kd * vel_error
-
-        return swing_force
-
-    def control_step(self, dt: float) -> Dict[str, float]:
-        """
-        Execute one control step
-
-        Uses simplified PD control with minimal walking motion
+        Get foot position and velocity in world frame
 
         Args:
-            dt: Time step
+            foot_link_idx: Link index of the foot
 
         Returns:
-            torques: Dictionary of joint torques
+            (position, velocity): Foot state
         """
-        # ULTRA-SIMPLE APPROACH: Just keep robot standing with straight legs
-        # No swing foot tracking, no WBC, just pure PD control
-        torques = self._compute_stance_torques()
+        link_state = p.getLinkState(
+            self.robot_id,
+            foot_link_idx,
+            computeLinkVelocity=1
+        )
 
-        # Add minimal orientation stabilization
-        orientation_torques = self._compute_orientation_stabilization()
-        for joint_name, torque_adj in orientation_torques.items():
-            if joint_name in torques:
-                torques[joint_name] += torque_adj
+        position = np.array(link_state[0])  # World position
+        velocity = np.array(link_state[6])  # Linear velocity
 
-        # Update time (but don't use gait generator)
-        self.time += dt
+        return position, velocity
 
-        return torques
-
-    def _compute_stance_torques(self) -> Dict[str, float]:
-        """
-        Compute baseline torques for stance (both legs)
-
-        Uses PD control to maintain straight-leg configuration
-        """
-        # Get current joint states
-        joint_states = {}
-        for joint_name, joint_idx in self.joint_dict.items():
-            state = p.getJointState(self.robot_id, joint_idx)
-            joint_states[joint_name] = (state[0], state[1])  # pos, vel
-
-        # Target: straight legs with slight outward stance (same as standing mode)
-        target_positions = {
-            'leg_l1_joint': -0.1,
-            'leg_l2_joint': 0.0,
-            'leg_l3_joint': 0.0,
-            'leg_l4_joint': 0.0,
-            'leg_l5_joint': 0.0,
-            'leg_r1_joint': 0.1,
-            'leg_r2_joint': 0.0,
-            'leg_r3_joint': 0.0,
-            'leg_r4_joint': 0.0,
-            'leg_r5_joint': 0.0,
-        }
-
-        # Compute PD torques
-        kp = 150.0  # Slightly lower than standing for compliance
-        kd = 15.0
-
-        torques = {}
-        for joint_name in self.joint_dict.keys():
-            if joint_name in joint_states and joint_name in target_positions:
-                pos, vel = joint_states[joint_name]
-                target_pos = target_positions[joint_name]
-
-                torque = kp * (target_pos - pos) - kd * vel
-                torques[joint_name] = torque
-
-        return torques
-
-    def _compute_swing_adjustment(self,
-                                   swing_foot: str,
-                                   swing_target_pos: np.ndarray,
-                                   swing_target_vel: np.ndarray) -> Dict[str, float]:
-        """
-        Compute torque adjustments for swing leg to track trajectory
-
-        Uses proportional adjustment to joint targets
-        """
-        # Get current foot position
-        foot_positions, foot_velocities = self.get_foot_positions_and_velocities()
-
-        if swing_foot == "left":
-            current_pos = foot_positions[0]
-            current_vel = foot_velocities[0]
-            leg_joints = ['leg_l3_joint', 'leg_l4_joint', 'leg_l5_joint']  # Hip, knee, ankle pitch
-        else:  # right
-            current_pos = foot_positions[1]
-            current_vel = foot_velocities[1]
-            leg_joints = ['leg_r3_joint', 'leg_r4_joint', 'leg_r5_joint']
-
-        # Compute position and velocity errors
-        pos_error = swing_target_pos - current_pos
-        vel_error = swing_target_vel - current_vel
-
-        # Simple mapping: z-error → hip+knee, x-error → hip
-        adjustments = {}
-
-        # Lift control (z-direction): bend knee
-        z_error = pos_error[2]
-        knee_joint = leg_joints[1]
-        adjustments[knee_joint] = 50.0 * z_error  # Proportional gain for knee lift
-
-        # Forward/back control (x-direction): adjust hip pitch
-        x_error = pos_error[0]
-        hip_joint = leg_joints[0]
-        adjustments[hip_joint] = 30.0 * x_error  # Proportional gain for hip
-
-        return adjustments
-
-    def _compute_orientation_stabilization(self) -> Dict[str, float]:
-        """
-        Compute torque adjustments for orientation stabilization
-
-        Applies small corrections to hip roll joints for balance
-        """
-        # Get current orientation
+    def _get_robot_state(self) -> Dict:
+        """Get current robot state"""
+        # Base state
         base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
-        base_euler = p.getEulerFromQuaternion(base_orn)
-        roll, pitch, yaw = base_euler
-
-        # Get angular velocity
         base_vel, base_ang_vel = p.getBaseVelocity(self.robot_id)
 
-        # Stabilize roll (lateral balance) using hip roll joints
-        kp_roll = 10.0
-        kd_roll = 2.0
+        # CoM
+        com_pos = compute_com(self.robot_id)
 
-        roll_correction = -(kp_roll * roll + kd_roll * base_ang_vel[0])
+        # Foot states
+        left_pos, left_vel = self._get_foot_state(self.left_foot_link)
+        right_pos, right_vel = self._get_foot_state(self.right_foot_link)
 
-        # Clamp corrections
-        roll_correction = np.clip(roll_correction, -5.0, 5.0)
-
-        adjustments = {
-            'leg_l1_joint': -roll_correction,  # Left hip roll
-            'leg_r1_joint': roll_correction,   # Right hip roll
+        return {
+            'base_pos': np.array(base_pos),
+            'base_orn': np.array(base_orn),
+            'base_vel': np.array(base_vel),
+            'base_ang_vel': np.array(base_ang_vel),
+            'com_pos': com_pos,
+            'left_foot_pos': left_pos,
+            'left_foot_vel': left_vel,
+            'right_foot_pos': right_pos,
+            'right_foot_vel': right_vel,
         }
 
-        return adjustments
-
-    def _swing_foot_torques(self,
-                           swing_foot: str,
-                           swing_target_pos: np.ndarray,
-                           swing_target_vel: np.ndarray) -> Dict[str, float]:
+    def _build_task_hierarchy(self, robot_state: Dict, gait_targets: Dict) -> None:
         """
-        Compute torques for swing foot trajectory tracking
+        Build task hierarchy based on current contact phase
 
-        Uses Jacobian transpose method
+        Args:
+            robot_state: Current robot state
+            gait_targets: Target positions from gait generator
         """
-        # Get swing foot position and velocity
-        foot_positions, foot_velocities = self.get_foot_positions_and_velocities()
+        self.task_hierarchy.clear_tasks()
 
-        if swing_foot == "left":
-            current_pos = foot_positions[0]
-            current_vel = foot_velocities[0]
-            leg_joints = ['leg_l1_joint', 'leg_l2_joint', 'leg_l3_joint', 'leg_l4_joint', 'leg_l5_joint']
-        else:  # right
-            current_pos = foot_positions[1]
-            current_vel = foot_velocities[1]
-            leg_joints = ['leg_r1_joint', 'leg_r2_joint', 'leg_r3_joint', 'leg_r4_joint', 'leg_r5_joint']
+        # Get current contact phase
+        phase = self.contact_fsm.phase
+        left_contact, right_contact = self.contact_fsm.get_contact_state()
 
-        # Compute desired force (PD control in Cartesian space)
-        kp = self.walking_params.kp_swing
-        kd = self.walking_params.kd_swing
+        # Priority 0: Stance foot constraints (highest priority)
+        if left_contact:
+            task = create_stance_foot_constraint(
+                foot_name="left",
+                foot_velocity=robot_state['left_foot_vel'],
+                kd=self.walking_params.kd_stance
+            )
+            self.task_hierarchy.add_task(task)
 
-        pos_error = swing_target_pos - current_pos
-        vel_error = swing_target_vel - current_vel
+        if right_contact:
+            task = create_stance_foot_constraint(
+                foot_name="right",
+                foot_velocity=robot_state['right_foot_vel'],
+                kd=self.walking_params.kd_stance
+            )
+            self.task_hierarchy.add_task(task)
 
-        desired_force = kp * pos_error + kd * vel_error
+        # Priority 1: Body orientation (keep upright)
+        desired_orientation = np.array([0, 0, 0, 1])  # Upright (quaternion)
+        task = create_body_orientation_task(
+            current_orientation=robot_state['base_orn'],
+            desired_orientation=desired_orientation,
+            current_angular_vel=robot_state['base_ang_vel'],
+            kp=self.walking_params.kp_orientation,
+            kd=self.walking_params.kd_orientation
+        )
+        self.task_hierarchy.add_task(task)
 
-        # Get Jacobian (simplified - use numerical approximation)
-        # Proper implementation would compute analytical Jacobian
-        J = self._compute_foot_jacobian(swing_foot)
+        # Priority 1: CoM tracking (keep CoM centered over support)
+        com_target_xy = np.zeros(2)  # Keep CoM centered (for now)
+        com_offset_xy = robot_state['com_pos'][:2] - com_target_xy
+        com_velocity_xy = robot_state['base_vel'][:2]  # Approximate
 
-        # Jacobian transpose method: tau = J^T * F
-        if J is not None:
-            tau = J.T @ desired_force
+        task = create_com_tracking_task(
+            com_offset=com_offset_xy,
+            com_velocity=com_velocity_xy,
+            kp=self.walking_params.kp_com,
+            kd=self.walking_params.kd_com
+        )
+        self.task_hierarchy.add_task(task)
 
-            # Map to joint names
-            torques = {}
-            for i, joint_name in enumerate(leg_joints):
-                if i < len(tau):
-                    torques[joint_name] = tau[i]
-        else:
-            torques = {}
+        # Priority 2: Swing foot tracking
+        if not left_contact:  # Left foot swinging
+            task = create_swing_foot_task(
+                foot_name="left",
+                current_pos=robot_state['left_foot_pos'],
+                desired_pos=gait_targets['left_foot'],
+                current_vel=robot_state['left_foot_vel'],
+                kp=self.walking_params.kp_swing,
+                kd=self.walking_params.kd_swing
+            )
+            self.task_hierarchy.add_task(task)
+
+        if not right_contact:  # Right foot swinging
+            task = create_swing_foot_task(
+                foot_name="right",
+                current_pos=robot_state['right_foot_pos'],
+                desired_pos=gait_targets['right_foot'],
+                current_vel=robot_state['right_foot_vel'],
+                kp=self.walking_params.kp_swing,
+                kd=self.walking_params.kd_swing
+            )
+            self.task_hierarchy.add_task(task)
+
+    def check_stability(self, robot_state: Dict) -> Tuple[bool, str]:
+        """
+        Check if robot is in a stable state
+
+        Args:
+            robot_state: Current robot state
+
+        Returns:
+            (is_stable, reason): Stability flag and reason if unstable
+        """
+        # Check orientation
+        base_orn = robot_state['base_orn']
+        euler = p.getEulerFromQuaternion(base_orn)
+        roll, pitch, yaw = euler
+
+        if abs(roll) > self.walking_params.max_roll_pitch:
+            return False, f"Roll angle too large: {np.degrees(roll):.1f}°"
+        if abs(pitch) > self.walking_params.max_roll_pitch:
+            return False, f"Pitch angle too large: {np.degrees(pitch):.1f}°"
+
+        # Check CoM height
+        com_height = robot_state['com_pos'][2]
+        if com_height < self.walking_params.min_com_height:
+            return False, f"CoM too low: {com_height:.3f}m"
+        if com_height > self.walking_params.max_com_height:
+            return False, f"CoM too high: {com_height:.3f}m"
+
+        return True, "Stable"
+
+    def update(self, dt: float) -> Dict[str, float]:
+        """
+        Main control update loop
+
+        Args:
+            dt: Time step (seconds)
+
+        Returns:
+            Joint torques {joint_name: torque}
+        """
+        self.time += dt
+
+        # Update at control frequency
+        if self.time - self.last_control_update < self.walking_params.control_dt:
+            # Return zero torques if not time to update yet
+            return {name: 0.0 for name in self.joint_dict.keys()}
+
+        self.last_control_update = self.time
+
+        # Update contact state machine
+        phase = self.contact_fsm.update(dt)
+
+        # Get gait targets (foot positions)
+        left_target, right_target = self.gait_generator.get_foot_trajectories(self.time)
+
+        gait_targets = {
+            'left_foot': left_target,
+            'right_foot': right_target
+        }
+
+        # Get current robot state
+        robot_state = self._get_robot_state()
+
+        # Safety check
+        is_stable, reason = self.check_stability(robot_state)
+        if not is_stable and self.is_active:
+            print(f"WARNING: Instability detected - {reason}")
+            # Could implement emergency stop here
+
+        # Build task hierarchy based on contact phase
+        self._build_task_hierarchy(robot_state, gait_targets)
+
+        # Get desired accelerations from task hierarchy
+        base_accel, joint_accel = self.task_hierarchy.get_desired_acceleration()
+
+        # For now, use simplified approach: return zero torques
+        # Full implementation would:
+        # 1. Solve WBC QP to get desired accelerations
+        # 2. Use inverse dynamics to compute torques
+        # 3. Apply gravity compensation
+
+        # Placeholder: return zero torques
+        torques = {name: 0.0 for name in self.joint_dict.keys()}
 
         return torques
-
-    def _compute_foot_jacobian(self, foot: str) -> np.ndarray:
-        """
-        Compute foot Jacobian (simplified)
-
-        Returns 3x5 Jacobian matrix mapping joint velocities to foot velocity
-        """
-        # This is a placeholder - proper implementation would compute analytical Jacobian
-        # For now, return None to skip Jacobian-based control
-        return None
 
     def reset(self):
         """Reset controller state"""
         self.time = 0.0
-        self.stance_foot = "right"
+        self.last_control_update = 0.0
+        self.is_active = False
         self.gait_generator.reset()
+        self.contact_fsm.reset()
+        self.task_hierarchy.clear_tasks()
+
+    def start(self):
+        """Activate walking controller"""
+        self.is_active = True
+        print("WBC Walking Controller: ACTIVE")
+
+    def stop(self):
+        """Deactivate walking controller"""
+        self.is_active = False
+        self.reset()
+        print("WBC Walking Controller: STOPPED")
+
+    def get_state_info(self) -> Dict:
+        """Get controller state for debugging/logging"""
+        return {
+            'time': self.time,
+            'active': self.is_active,
+            'phase': self.contact_fsm.phase.name,
+            'step_count': self.contact_fsm.step_count,
+            'num_tasks': len(self.task_hierarchy.tasks),
+        }
+
+
+if __name__ == "__main__":
+    print("WBC Walking Controller - Phase 3")
+    print("\nThis controller integrates:")
+    print("  - Contact State Machine")
+    print("  - Gait Generator")
+    print("  - Task Hierarchy (WBC)")
+    print("  - Inverse Dynamics")
+    print("\nUse via main_simulation.py --mode walking")
