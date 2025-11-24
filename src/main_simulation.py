@@ -736,7 +736,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
         kd_swing=10.0,
         kd_stance=20.0,
         transition_duration=0.05,
-        enable_emergency_stop=True,
+        enable_emergency_stop=True,  # Re-enabled
     )
 
     # Create WBC Walking Controller

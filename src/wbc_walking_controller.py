@@ -127,7 +127,7 @@ class WBCWalkingParams:
     max_com_offset: float = 0.08     # Maximum CoM offset from center (m)
 
     # Safety limits
-    max_roll_pitch: float = 0.26     # Maximum body tilt (rad, ~15 degrees)
+    max_roll_pitch: float = 0.35     # Maximum body tilt (rad, ~20 degrees, relaxed for tuning)
     min_com_height: float = 0.40     # Minimum acceptable CoM height (m)
     max_com_height: float = 0.70     # Maximum acceptable CoM height (m)
     max_zmp_offset: float = 0.12     # Maximum ZMP distance from support polygon center (m, relaxed)
