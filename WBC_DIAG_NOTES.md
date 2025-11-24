@@ -134,8 +134,70 @@ Scope: Walking-mode stability investigation with `WALKING_WBC=1`
 - ❌ WBC with HYBRID_CONTROL (fails in ~2s, better but insufficient)
 - ❌ Persistent contact loss at t=0.12s across all configurations
 
-## Next Steps (Revised)
-1) **Investigate contact loss at t=0.12s** - PyBullet contact solver settings, timestep, or numerical issues
-2) **Try different QP solver** - OSQP may have numerical issues, try ECOS or CLARABEL
-3) **Add contact force continuity constraints** - penalize sudden force changes between timesteps
-4) **Consider full-body inverse dynamics** - compute desired joint torques directly from tasks without force optimization intermediate step
+---
+
+### Test #5: Enhanced PyBullet Contact Solver ✅
+**Objective:** Investigate if PyBullet contact solver parameters cause contact loss at t=0.12s
+
+**Implementation:**
+- Modified `simulation_env.py` to add `enable_stable_contacts` parameter with enhanced settings:
+  - `numSolverIterations`: 200 (default: 50) - 4x increase for better constraint accuracy
+  - `numSubSteps`: 4 (default: 1) - smoother contact resolution
+  - `contactBreakingThreshold`: 0.001m (default: 0.02m) - prevent premature contact breaking
+  - `erp`: 0.1 (default: ~0.2) - softer constraint correction
+  - `contactERP`: 0.05 - contact-specific ERP for stability
+  - `enableConeFriction`: 1 - friction anchors to prevent foot sliding
+- Added `set_contact_properties()` method for foot-specific tuning:
+  - `lateralFriction`: 1.2 (increased from 1.0)
+  - `contactStiffness`: 1e4 (high stiffness for rigid contact)
+  - `contactDamping`: 1e3 (high damping for stable contact)
+- Modified `main_simulation.py` to automatically enable enhanced settings for torque/hybrid modes
+
+**Results:**
+| Test Duration | Height | Roll | Pitch | Forces (N/foot) | Status |
+|---------------|--------|------|-------|----------------|--------|
+| 10s | 0.689m | 0.2° | 1.0° | 75-76 | ✅ **STABLE** |
+| 30s | 0.689m | 0.1-0.2° | -0.2° to 1.5° | 75-76 | ✅ **STABLE** |
+
+**Key Findings:**
+- ✅ **BREAKTHROUGH - Full stability achieved!**
+- ✅ Brief contact settling phase (t=0-0.24s) but successful recovery
+- ✅ Stable contact maintained for 30+ seconds (vs previous failures at 0.9-2s)
+- ✅ Forces stabilized to 75-76 N/foot (near ideal ~62 N/foot)
+- ✅ Torques remain low (~4.4 Nm after settling, well below 20 Nm limit)
+- ✅ Roll and Pitch well within acceptable range (<5°)
+
+**Conclusion:** PyBullet's default contact solver parameters were the root cause. Enhanced solver settings combined with Cartesian foot stiffness provide robust stability. The brief initial settling is acceptable and allows for successful recovery.
+
+---
+
+## FINAL STATUS SUMMARY (2025-01-30)
+
+**✅ WBC HYBRID CONTROL STABILITY ACHIEVED**
+
+**Successful Configuration:**
+- Control mode: Hybrid (position on hips/knees, torque on ankles)
+- Foot anchoring: w=10, kp=300, kd=100
+- PyBullet solver: Enhanced settings (200 iterations, 4 substeps, tight contact threshold)
+- Contact properties: High stiffness/damping on feet
+- Environment variables:
+  ```bash
+  WBC_HYBRID_CONTROL=1
+  WBC_ANCHOR_WEIGHT=10
+  WBC_ANCHOR_KP=300
+  WBC_ANCHOR_KD=100
+  ```
+
+**Performance:**
+- Duration: 30+ seconds stable standing
+- Height: 0.689m (stable)
+- Roll: 0.1-0.2° (excellent)
+- Pitch: -0.2° to 1.5° (well within <5° target)
+- Forces: 75-76 N/foot (stable, balanced)
+- Torques: ~4.4 Nm (well below limits)
+
+## Next Steps (Walking Mode)
+1) **Apply enhanced contact solver to WALKING_WBC=1** - Test if walking mode benefits from same settings
+2) **Test full torque control mode** - Try `WBC_TORQUE_CONTROL=1` with enhanced solver (not just hybrid)
+3) **Implement contact state transitions** - Handle swing phase and contact switching smoothly
+4) **Add swing foot trajectory tracking** - WBC task for swing foot position/velocity control

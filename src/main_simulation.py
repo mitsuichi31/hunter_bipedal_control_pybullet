@@ -526,10 +526,23 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
-    # Create simulation
+    # Create simulation with enhanced contact solver for torque control
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
-    sim.connect()
+
+    # Enable enhanced contact solver for torque/hybrid control modes
+    enable_stable_contacts = (use_torque_control or use_hybrid_control)
+    sim.connect(enable_stable_contacts=enable_stable_contacts)
+
     sim.load_robot(start_position=[0, 0, 0.679])
+
+    # Set contact properties for better foot-ground interaction
+    if enable_stable_contacts:
+        sim.set_contact_properties(
+            lateral_friction=1.2,      # Higher friction to prevent sliding
+            spinning_friction=0.2,     # Prevent foot spinning
+            rolling_friction=0.05,     # Prevent foot rolling
+            restitution=0.0            # No bounce
+        )
 
     # Stable standing configuration (straight legs, feet on ground)
     standing_config = {
