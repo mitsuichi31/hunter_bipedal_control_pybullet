@@ -667,8 +667,8 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
 
 def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable_estop: bool = False):
     """
-    Diagnostic walking mode: reuse standing POSITION_CONTROL posture
-    to verify stability before enabling WBC torque path.
+    Walking mode: posture control baseline plus optional WBC stepping
+    controlled by WALKING_WBC=1 environment variable.
 
     Args:
         duration: Simulation duration in seconds
@@ -677,7 +677,8 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     print("="*70)
     print("WALKING SIMULATION - Posture Control Baseline")
     print("="*70)
-    print("Control: POSITION_CONTROL standing posture (no WBC torque)")
+    use_wbc = os.environ.get("WALKING_WBC", "0") != "0"
+    print(f"Control: POSITION_CONTROL standing posture{' + WBC stepping' if use_wbc else ''}")
     print()
 
     # Get URDF path
@@ -740,7 +741,50 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     start_time = time.time()
     last_status_print = 0.0
 
+    controller = None
+    if use_wbc:
+        print("Initializing WBC walking controller...")
+        gait_params = GaitParams(
+            step_length=0.01,
+            step_height=0.01,
+            step_period=1.5,
+            double_support_ratio=0.8,
+            stance_width=0.18,
+            body_height=0.679,
+        )
+        wbc_params = WBCParams(
+            friction_coef=0.6,
+            max_normal_force=500.0,
+            min_normal_force=1.0,
+            w_force_tracking=10.0,
+            w_force_regularization=0.01,
+            w_torque_regularization=0.001
+        )
+        walking_params = WBCWalkingParams(
+            kp_orientation=60.0,
+            kd_orientation=8.0,
+            kp_com=20.0,
+            kd_com=4.0,
+            kp_swing=80.0,
+            kd_swing=8.0,
+            kd_stance=20.0,
+            transition_duration=0.05,
+            enable_emergency_stop=not disable_estop,
+        )
+        controller = WBCWalkingController(
+            robot_id=sim.robot_id,
+            joint_dict=sim.joint_dict,
+            gait_params=gait_params,
+            wbc_params=wbc_params,
+            walking_params=walking_params
+        )
+        controller.start()
+
     while sim.time < duration:
+        if controller is not None:
+            torques = controller.update(sim.dt)
+            sim.set_joint_torques(torques)
+
         # Step simulation
         sim.step()
 
@@ -776,8 +820,11 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     else:
         print("\n✗ UNSTABLE: Robot tilted beyond limits")
 
-    print("\nNote: Walking mode is currently using standing posture control only.")
-    print("Once stable, reintroduce WBC walking controller incrementally.")
+    if controller is None:
+        print("\nNote: Walking mode is currently using standing posture control only.")
+        print("Enable WBC stepping with WALKING_WBC=1 to reintroduce WBC incrementally.")
+    else:
+        print("\nWBC stepping was enabled for this run.")
 
     sim.disconnect()
 
