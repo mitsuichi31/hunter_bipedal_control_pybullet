@@ -10,6 +10,15 @@ Scope: Walking-mode stability investigation with `WALKING_WBC=1`
 - Tuning sweep: posture PD from mild (kp/kd 8/0.8) to moderate (15/1.5) with diag scale 0.25; stance foot damping `kd_stance` raised to 60 for anchoring; joint damping gain reduced to 0.3.
 - Torque clamp held at ±20 Nm during diagnostics; contact state frozen to double support; zero-step gait; WBC at 1 kHz.
 
+### Update 2026-02-03 (standing-mode hybrid regression check)
+- Added `standing_mode` flag to `WBCWalkingParams` and `WBC_WALKING_STANDING=1` to force double support/gait bypass with hybrid split enabled by default. Foot anchoring defaults to w/kp/kd = 10/300/100 in this path.
+- Cached `GravityCompensation` instance inside `InverseDynamics` to remove per-step logging spam; gravity fallback logs are now a one-time print.
+- Reduced standing-mode posture/damping: posture kp/kd=8/0.8, diag posture scale=0.1, joint damping=0.1 (stance kd still 60). Goal: avoid torque saturation in first 50 ms.
+- Test (inside `hunter-simulation`):  
+  `WALKING_WBC=1 WBC_WALKING_STANDING=1 WBC_HYBRID_CONTROL=1 WBC_ANCHOR_WEIGHT=10 WBC_ANCHOR_KP=300 WBC_ANCHOR_KD=100 python3 src/main_simulation.py --mode walking --duration 6 --no-gui`  
+  Result: pitch held near -5.6° at t=2s but tipped by ~4s (final pitch ≈ -84°, height ~0.10 m). Forces small initially; instability returns despite gentler gains.  
+  Logs: `/tmp/wbc_standing_run3.log` (in container).
+
 ## Observations
 - With `WALKING_WBC=1`, the robot still tips forward within ~0.02–0.05 s despite small contact torques (~6–7 Nm) and GRFs ~70–80 N/foot. Torques hit the ±20 Nm clamp as posture/damping react to base tipping.
 - Position-control-only walking (`WALKING_WBC=0`) remains stable; torque-control path loses the base hold once motors are switched to torque mode.
@@ -329,3 +338,178 @@ Hybrid control implementation is correct, but walking controller needs architect
 2) **Validate hybrid standing stability** - Get 10+ second stability like MPC+WBC standing
 3) **Gradually add motion** - Once stable, add small CoM shifts before attempting steps
 4) **Redesign gait integration** - Adapt gait generator for hybrid control constraints
+
+---
+
+### Test #9: Option A - Gain Matching and Posture Scaling Removal ❌
+**Date:** 2025-11-24
+**Objective:** Compare WBCWalkingController standing mode to working MPCWBCController to identify critical differences
+
+**Background:**
+- MPC+WBC standing works for 30+ seconds (stable)
+- WBC Walking standing mode fails at ~4s (Pitch=-84°) despite identical environment variables
+- Both use hybrid control, foot anchoring (w=10, kp=300, kd=100), enhanced solver
+
+**Critical Differences Identified:**
+1. **Task gains mismatch**
+   - Orientation: MPCWBCController kp=100.0, kd=3.0 vs WBCWalkingController kp=60.0, kd=8.0
+   - CoM: MPCWBCController kp=50.0, kd=5.0 vs WBCWalkingController kp=20.0, kd=4.0
+2. **Posture PD scaling**
+   - WBCWalkingController scales posture torques by 0.25 in standing mode (4x weaker)
+   - MPCWBCController uses full strength (1.0)
+3. **Explicit stance foot constraints**
+   - WBCWalkingController adds stance foot constraints (Priority 0) on top of foot anchoring
+   - MPCWBCController only uses foot anchoring (no explicit constraints)
+4. **Task hierarchy complexity**
+   - WBCWalkingController: 4 tasks (stance foot, orientation, CoM, posture)
+   - MPCWBCController: 2 tasks (orientation, CoM)
+
+**Option A Implementation:**
+- Updated `WBCWalkingParams` in src/wbc_walking_controller.py:116-122
+  - Matched orientation gains: kp=100.0, kd=3.0
+  - Matched CoM gains: kp=50.0, kd=5.0
+- Removed posture scaling in standing mode (line 638-645): `posture_scale = 1.0`
+
+**Test Command:**
+```bash
+WALKING_WBC=1 WBC_WALKING_STANDING=1 WBC_HYBRID_CONTROL=1 \
+WBC_ANCHOR_WEIGHT=10 WBC_ANCHOR_KP=300 WBC_ANCHOR_KD=100 \
+python3 src/main_simulation.py --mode walking --duration 10 --no-gui
+```
+
+**Results:**
+- ❌ **FAILED** - Robot fell at t=10.0s (Pitch=-83.5°)
+- Same failure mode as before Option A changes
+- Diagnostic output shows **posture torque explosion**:
+  ```
+  t=0.013s: posture_norm=93.505, force_norms=[1.652 1.311], unclipped_max=87.019 -> clipped_max=20.000
+  t=0.014s: posture_norm=109.110, force_norms=[47.08 51.715], unclipped_max=87.005 -> clipped_max=20.000
+  t=0.015s: posture_norm=105.076, force_norms=[0.006 0.007], unclipped_max=87.003 -> clipped_max=20.000
+  ```
+- Posture PD computes 87-109 Nm (norm across all 10 joints)
+- But only 2 ankle joints actually apply torques (hybrid control)
+- Unclipped torques exceed limit by 4-5x, saturating at 20 Nm
+- Force oscillations at 500Hz (alternating odd/even timesteps)
+
+**Root Cause:**
+- **Architectural incompatibility** between WBC and hybrid control
+- WBC computes forces assuming free-floating base + all 10 joints apply torques
+- Hybrid control only applies torques to 2 ankle joints (leg_l5, leg_r5)
+- Position-controlled joints (8 hips/knees) receive conflicting commands:
+  - WBC dynamics expect certain joint accelerations for base stability
+  - Position control commands fixed joint angles
+  - System becomes uncontrollable as errors accumulate
+
+**Conclusion:** Matching gains and removing posture scaling does NOT resolve instability. The issue is deeper than parameter tuning.
+
+---
+
+### Test #10: Option B - Stance Constraint Removal ❌
+**Date:** 2025-11-24
+**Objective:** Remove explicit stance foot constraints to avoid overconstraining the QP solver
+
+**Hypothesis:**
+- WBCWalkingController adds explicit stance foot constraints (Priority 0) on top of foot anchoring
+- MPCWBCController only uses foot anchoring in QP objective
+- Redundant constraints may overconstrain the system
+
+**Option B Implementation:**
+- Commented out explicit stance foot constraints in src/wbc_walking_controller.py:347-366
+- Relies solely on foot anchoring (w=10, kp=300, kd=100) for stance stability
+- Matches MPCWBCController architecture (2-task hierarchy: orientation + CoM)
+
+**Test Command:**
+```bash
+WALKING_WBC=1 WBC_WALKING_STANDING=1 WBC_HYBRID_CONTROL=1 \
+WBC_ANCHOR_WEIGHT=10 WBC_ANCHOR_KP=300 WBC_ANCHOR_KD=100 \
+python3 src/main_simulation.py --mode walking --duration 10 --no-gui
+```
+
+**Results:**
+- ❌ **FAILED** - Robot fell at t=10.0s (Pitch=-83.5°)
+- **IDENTICAL FAILURE MODE** to Option A
+- Same posture torque explosion: 87-109 Nm norm
+- Same force oscillations at 500Hz
+- Same timing and pattern
+
+**Comparison:**
+| Configuration | Stance Constraints | Posture Scaling | Duration | Final Pitch | Status |
+|--------------|-------------------|-----------------|----------|-------------|--------|
+| Baseline (Test #8) | ✅ Priority 0 | 0.25 (weak) | ~4s | -84° | ❌ FAIL |
+| Option A | ✅ Priority 0 | 1.0 (full) | 10s | -83.5° | ❌ FAIL |
+| Option B | ❌ Removed | 1.0 (full) | 10s | -83.5° | ❌ FAIL |
+
+**Conclusion:** Neither Option A (gain matching) nor Option B (constraint simplification) resolves the fundamental instability. The problem is architectural, not parametric.
+
+---
+
+## DEEPER ARCHITECTURAL ANALYSIS REQUIRED
+
+**Status:** Investigation paused - requires fundamental architectural rework
+
+**Core Problem Identified:**
+
+The WBC framework and hybrid control mode have a **fundamental incompatibility**:
+
+1. **WBC Dynamics Assumption:**
+   - WBC QP solver computes optimal ground reaction forces for free-floating base dynamics
+   - Inverse dynamics maps these forces to joint torques: τ = M(q)q̈ + g(q)
+   - Assumes all 10 joints will apply computed torques
+
+2. **Hybrid Control Reality:**
+   - Only 2 ankle joints (leg_l5, leg_r5) apply WBC torques
+   - 8 hip/knee joints use position control (fixed angle targets)
+   - Position-controlled joints ignore WBC dynamics
+
+3. **Resulting Conflict:**
+   - WBC computes joint accelerations assuming 10-DOF actuation
+   - Only 2-DOF actually controlled by WBC torques
+   - Base cannot be stabilized with ankle torques alone
+   - Posture error accumulates as position control conflicts with WBC dynamics
+   - System diverges: posture_norm=87-109 Nm (4-5x torque limit)
+
+**Why MPCWBCController Works:**
+
+The successful standing controller (MPCWBCController) likely has subtle architectural differences not captured by parameter matching:
+- Different task formulation or prioritization logic
+- Different integration between MPC planning and WBC execution
+- Possibly different handling of hybrid control split
+- May use different inverse dynamics computation path
+
+**Evidence That Parameters Are NOT the Issue:**
+- ✅ Matched all gains (kp/kd for orientation, CoM, posture)
+- ✅ Removed posture scaling (1.0 vs 0.25)
+- ✅ Removed explicit stance constraints
+- ✅ Same foot anchoring (w=10, kp=300, kd=100)
+- ✅ Same enhanced PyBullet solver settings
+- ❌ **Still fails identically**
+
+**Recommendations:**
+
+1. **Deep Code Audit:**
+   - Line-by-line comparison of MPCWBCController vs WBCWalkingController
+   - Focus on how WBC tasks are formulated and solved
+   - Check if there are conditional code paths based on control mode
+
+2. **Hybrid Control Validation:**
+   - Verify that hybrid control actually disables torque application on hips/knees
+   - Check if WBC inverse dynamics knows about the hybrid split
+   - May need to modify WBC to compute torques only for actuated joints
+
+3. **Alternative Approaches:**
+   - Consider full position control for standing (bypass WBC entirely)
+   - Implement simplified WBC that only optimizes ankle torques
+   - Redesign task hierarchy to respect hybrid control constraints
+
+4. **Test MPCWBCController Directly:**
+   - Use MPCWBCController for walking mode instead of WBCWalkingController
+   - Validate if the issue is specific to WBCWalkingController implementation
+   - May reveal architectural differences
+
+---
+
+## INVESTIGATION STATUS: REQUIRES ARCHITECTURAL REDESIGN
+
+**Date Paused:** 2025-11-24
+**Reason:** Parameter tuning and task simplification insufficient
+**Next Steps:** Deep architectural analysis of WBC-hybrid control integration
