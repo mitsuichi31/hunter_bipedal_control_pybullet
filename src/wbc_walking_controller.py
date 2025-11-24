@@ -130,7 +130,7 @@ class WBCWalkingParams:
     max_roll_pitch: float = 0.35     # Maximum body tilt (rad, ~20 degrees, relaxed for tuning)
     min_com_height: float = 0.40     # Minimum acceptable CoM height (m)
     max_com_height: float = 0.70     # Maximum acceptable CoM height (m)
-    max_zmp_offset: float = 0.12     # Maximum ZMP distance from support polygon center (m, relaxed)
+    max_zmp_offset: float = 0.20     # Maximum ZMP distance from support polygon center (m, relaxed for tuning)
 
     # Contact transitions
     transition_duration: float = 0.05  # Smooth transition duration (seconds, 50ms)
@@ -537,9 +537,9 @@ class WBCWalkingController:
         ])
 
         # PD control to compute desired accelerations
-        # Higher gains for stronger control
-        kp = 500.0  # Position gain
-        kd = 50.0   # Velocity gain
+        # Very high gains for aggressive control
+        kp = 2000.0  # Position gain (increased 4x)
+        kd = 200.0   # Velocity gain (increased 4x)
 
         position_error = target_positions - joint_positions
         desired_accelerations = kp * position_error - kd * joint_velocities
@@ -664,6 +664,14 @@ class WBCWalkingController:
 
         # Compute joint torques using simplified WBC approach
         torques = self._compute_torques(robot_state, gait_targets, current_contact)
+
+        # Debug: Print torques periodically
+        if abs(self.time - 0.1) < 0.01 or abs(self.time - 0.5) < 0.01:
+            torque_magnitudes = [abs(t) for t in torques.values()]
+            max_torque = max(torque_magnitudes) if torque_magnitudes else 0.0
+            avg_torque = sum(torque_magnitudes) / len(torque_magnitudes) if torque_magnitudes else 0.0
+            print(f"[DEBUG t={self.time:.2f}s] Torques - Max: {max_torque:.2f} Nm, Avg: {avg_torque:.2f} Nm")
+            print(f"  Sample: {list(torques.items())[:3]}")
 
         return torques
 

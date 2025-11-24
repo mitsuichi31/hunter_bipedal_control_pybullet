@@ -705,13 +705,13 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
     }
     sim.reset_robot(position=[0, 0, 0.679], joint_positions=standing_config)
 
-    # Ultra-conservative gait parameters (Phase 3 M4.1)
+    # Ultra-conservative gait parameters (Phase 3 M4.2 - Incremental Tuning)
     print("Configuring ultra-conservative gait...")
     gait_params = GaitParams(
-        step_length=0.05,           # 5cm steps (very small)
-        step_height=0.03,           # 3cm lift (very low)
-        step_period=2.0,            # 2 seconds per step (very slow)
-        double_support_ratio=0.5,   # 50% double support (very stable)
+        step_length=0.02,           # 2cm steps (extremely small)
+        step_height=0.02,           # 2cm lift (extremely low)
+        step_period=1.5,            # 1.5 seconds per step (faster cycle)
+        double_support_ratio=0.7,   # 70% double support (maximum stability)
         stance_width=0.18,          # Standard stance
         body_height=0.45,           # Nominal body height
     )
@@ -736,7 +736,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
         kd_swing=10.0,
         kd_stance=20.0,
         transition_duration=0.05,
-        enable_emergency_stop=True,  # Re-enabled
+        enable_emergency_stop=True,  # Re-enabled after testing
     )
 
     # Create WBC Walking Controller
