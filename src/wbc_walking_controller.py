@@ -122,7 +122,7 @@ class WBCWalkingParams:
     kd_swing: float = 10.0          # Swing foot velocity damping
 
     # Control gains - Stance foot constraint
-    kd_stance: float = 20.0         # Stance foot damping (drive velocity to zero)
+    kd_stance: float = 60.0         # Stance foot damping (drive velocity to zero, higher for anchoring)
 
     # Balance parameters
     com_height_target: float = 0.65  # Target CoM height (m, nearer to stable straight-leg)
@@ -138,10 +138,18 @@ class WBCWalkingParams:
     transition_duration: float = 0.05  # Smooth transition duration (seconds, 50ms)
 
     # Control frequency
-    control_dt: float = 0.01         # Control update rate (seconds, 100Hz)
+    control_dt: float = 0.001        # Control update rate (seconds, 1kHz)
 
     # Emergency stop
     enable_emergency_stop: bool = True   # Enable automatic emergency stop (can be disabled via CLI flag)
+
+    # Diagnostics
+    diag_freeze_contacts: bool = False    # If True, force double support and skip ZMP checks
+    torque_limit: float = 20.0            # Torque clamp (Nm) for safety
+    posture_kp: float = 15.0              # Joint-space posture hold (per-joint, moderate)
+    posture_kd: float = 1.5               # Joint-space damping for posture hold
+    diag_posture_scale: float = 0.25      # Scale posture gains when diagnostics freeze contacts
+    joint_damping_gain: float = 0.3       # Additional joint velocity damping (Nm per rad/s)
 
 
 class WBCWalkingController:
@@ -206,6 +214,9 @@ class WBCWalkingController:
         self.last_control_update = 0.0
         self.is_active = False
         self.previous_contact_state = (True, True)  # Track contact state for transition detection
+        self._diag_steps_logged = 0  # Limit verbose diagnostic prints
+        self._posture_targets = None  # Standing posture reference (actuated order)
+        self._jacobian_fail_logged = False  # Avoid flooding logs
 
         # Foot link indices
         self.left_foot_link, self.right_foot_link = self._find_foot_links()
@@ -460,6 +471,39 @@ class WBCWalkingController:
             velocities.append(state[1])
         return np.array(positions), np.array(velocities)
 
+    def _get_posture_targets(self) -> np.ndarray:
+        """Standing posture targets in actuated joint order"""
+        if self._posture_targets is None:
+            standing_config = {
+                'leg_l1_joint': -0.1,
+                'leg_l2_joint': 0.0,
+                'leg_l3_joint': 0.0,
+                'leg_l4_joint': 0.0,
+                'leg_l5_joint': 0.0,
+                'leg_r1_joint': 0.1,
+                'leg_r2_joint': 0.0,
+                'leg_r3_joint': 0.0,
+                'leg_r4_joint': 0.0,
+                'leg_r5_joint': 0.0,
+            }
+            targets = []
+            for idx in self.inv_dyn._actuated_joints:
+                joint_name = self.inv_dyn._joint_names.get(idx)
+                targets.append(standing_config.get(joint_name, 0.0))
+            self._posture_targets = np.array(targets)
+        return self._posture_targets
+
+    def _compute_posture_pd(self,
+                            joint_positions: np.ndarray,
+                            joint_velocities: np.ndarray) -> np.ndarray:
+        """Joint-space PD toward the nominal standing posture"""
+        targets = self._get_posture_targets()
+        pos_err = targets - joint_positions
+        return (
+            self.walking_params.posture_kp * pos_err
+            - self.walking_params.posture_kd * joint_velocities
+        )
+
     def _map_torques_to_dict(self, torques_array: np.ndarray) -> Dict[str, float]:
         """Map torque array (actuated order) to {joint_name: torque}"""
         torques = {name: 0.0 for name in self.joint_dict.keys()}
@@ -470,10 +514,9 @@ class WBCWalkingController:
         return torques
 
     def _compute_contact_jacobians(self) -> Dict[str, Optional[np.ndarray]]:
-        """Compute linear Jacobians for each foot, reduced to actuated joints"""
-        q = [p.getJointState(self.robot_id, idx)[0] for idx in self.inv_dyn._actuated_joints]
-        qd = [p.getJointState(self.robot_id, idx)[1] for idx in self.inv_dyn._actuated_joints]
-        zeros = [0.0] * len(q)
+        """Compute linear Jacobians for each foot, then reduce to actuated joints"""
+        q_act, qd_act = self._get_actuated_joint_states()
+        zeros_act = [0.0] * len(q_act)
 
         jacobians = {}
         for foot_name, foot_idx in (("left_foot", self.left_foot_link), ("right_foot", self.right_foot_link)):
@@ -482,15 +525,20 @@ class WBCWalkingController:
                     self.robot_id,
                     foot_idx,
                     [0, 0, 0],
-                    q,
-                    qd,
-                    zeros
+                    list(q_act),
+                    list(qd_act),
+                    zeros_act
                 )
-                # PyBullet returns base dofs first (6) then provided joints
-                j_lin = np.array(j_lin)[:, 6:]
+                j_lin = np.array(j_lin)
+                # PyBullet prepends 6 base DoFs; keep joint columns only
+                if j_lin.shape[1] > len(q_act):
+                    j_lin = j_lin[:, -len(q_act):]
                 jacobians[foot_name] = j_lin
             except Exception as e:
-                print(f"Jacobian compute failed for {foot_name}: {e}")
+                if not self._jacobian_fail_logged:
+                    print(f"Jacobian compute failed for {foot_name}: {e}")
+                    print(f"  len(q_act)={len(q_act)}, len(joints)={len(self.inv_dyn._actuated_joints)}")
+                    self._jacobian_fail_logged = True
                 jacobians[foot_name] = None
         return jacobians
 
@@ -536,6 +584,11 @@ class WBCWalkingController:
         # Gravity compensation
         joint_positions, joint_velocities = self._get_actuated_joint_states()
         gravity_torques = self.inv_dyn.compute_gravity_torques(joint_positions)
+        if self.walking_params.diag_freeze_contacts:
+            posture_scale = self.walking_params.diag_posture_scale
+        else:
+            posture_scale = 1.0
+        posture_torques = posture_scale * self._compute_posture_pd(joint_positions, joint_velocities)
 
         # Map contact forces to joint torques: tau += J^T * f
         contact_torques = np.zeros_like(gravity_torques)
@@ -547,10 +600,36 @@ class WBCWalkingController:
                 continue
             contact_torques += J.T @ ground_forces[i]
 
-        # Mild velocity damping to reduce chatter
-        damping = -0.5 * joint_velocities
+        # Additional joint damping to reduce chatter (Nm per rad/s)
+        damping = -self.walking_params.joint_damping_gain * joint_velocities
 
-        total_torques = gravity_torques + contact_torques + damping
+        unclipped_torques = gravity_torques + contact_torques + posture_torques + damping
+        total_torques = np.clip(unclipped_torques,
+                                -self.walking_params.torque_limit,
+                                self.walking_params.torque_limit)
+
+        if self._diag_steps_logged < 30:
+            if self._diag_steps_logged == 0:
+                print(f"[WBC diag] posture_targets={np.round(self._get_posture_targets(), 3)}")
+                print(f"[WBC diag] joint_pos={np.round(joint_positions, 3)}")
+            force_norms = [float(np.linalg.norm(f)) for f in ground_forces]
+            jac_ok = all(J is not None for J in foot_jacs.values())
+            print(
+                "[WBC diag]"
+                f" t={self.time:6.3f}s"
+                f" | base_acc={np.round(base_accel, 3)}"
+                f" | height_err={height_error: .3f}"
+                f" | force_norms={np.round(force_norms, 3)}"
+                f" | contact_tau_norm={np.linalg.norm(contact_torques):6.3f}"
+                f" | grav_tau_norm={np.linalg.norm(gravity_torques):6.3f}"
+                f" | posture_norm={np.linalg.norm(posture_torques):6.3f}"
+                f" | damp_norm={np.linalg.norm(damping):6.3f}"
+                f" | unclipped_max={np.max(np.abs(unclipped_torques)):6.3f}"
+                f" -> clipped_max={np.max(np.abs(total_torques)):6.3f}"
+                f" | jacobian_ok={jac_ok}"
+            )
+            self._diag_steps_logged += 1
+
         return self._map_torques_to_dict(total_torques)
 
     def _detect_and_handle_transitions(self, current_contact: Tuple[bool, bool]):
@@ -605,32 +684,38 @@ class WBCWalkingController:
 
         self.last_control_update = self.time
 
-        # Update contact state machine
-        phase = self.contact_fsm.update(dt)
+        if self.walking_params.diag_freeze_contacts:
+            # Force double support and freeze foot targets
+            current_contact = (True, True)
+            left_target, right_target = self._get_foot_state(self.left_foot_link)[0], self._get_foot_state(self.right_foot_link)[0]
+            gait_targets = {'left_foot': left_target, 'right_foot': right_target}
+        else:
+            # Update contact state machine
+            phase = self.contact_fsm.update(dt)
 
-        # Get current contact state
-        current_contact = self.contact_fsm.get_contact_state()
+            # Get current contact state
+            current_contact = self.contact_fsm.get_contact_state()
 
-        # Detect and handle contact transitions
-        self._detect_and_handle_transitions(current_contact)
+            # Detect and handle contact transitions
+            self._detect_and_handle_transitions(current_contact)
 
-        # Update transition manager
-        transition_weight = self.transition_manager.update(dt)
+            # Update transition manager
+            transition_weight = self.transition_manager.update(dt)
 
-        # Get gait targets (foot positions)
-        left_target, right_target = self.gait_generator.get_foot_trajectories(self.time)
+            # Get gait targets (foot positions)
+            left_target, right_target = self.gait_generator.get_foot_trajectories(self.time)
 
-        gait_targets = {
-            'left_foot': left_target,
-            'right_foot': right_target
-        }
+            gait_targets = {
+                'left_foot': left_target,
+                'right_foot': right_target
+            }
 
         # Get current robot state
         robot_state = self._get_robot_state()
 
         # Enhanced safety check
         is_stable, reason = self.check_stability(robot_state)
-        if not is_stable:
+        if not is_stable and not self.walking_params.diag_freeze_contacts:
             if self.is_active:
                 print(f"⚠ WARNING: Instability detected - {reason}")
 

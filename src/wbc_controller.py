@@ -120,16 +120,13 @@ class WholeBodyController:
         A = self._build_contact_jacobian(foot_positions, contact_indices)
 
         # Desired wrench (force + torque) from dynamics
-        # F = m * a_desired
-        gravity = np.array([0, 0, -9.81])
-        desired_force = self.mass * (desired_base_accel[0:3] - gravity)
+        # F = m * a_desired + m * g  (expressed in world frame)
+        gravity_force = np.array([0.0, 0.0, self.mass * 9.81])
+        desired_force = gravity_force + self.mass * desired_base_accel[0:3]
 
-        # For torque, we need to consider moment of inertia
-        # Simplified: assume point mass at CoM
-        com_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
-
-        # Desired torque (simplified - would need proper inertia matrix)
-        desired_torque = desired_base_accel[3:6] * self.mass * 0.1  # Rough approximation
+        # For torque, use CoM-aligned frame (simplified inertia about CoM)
+        com_pos = compute_com(self.robot_id)
+        desired_torque = desired_base_accel[3:6] * (self.mass * 0.05)  # small inertia proxy
 
         desired_wrench = np.concatenate([desired_force, desired_torque])
 

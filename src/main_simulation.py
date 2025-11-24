@@ -500,11 +500,27 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     """
     Test robot with MPC + WBC Controller
 
+    Control modes (via environment variable):
+    - WBC_TORQUE_CONTROL=0 (default): Position control (stable, Phase 2)
+    - WBC_TORQUE_CONTROL=1: Actual torque control (Phase 3 validation)
+
     Args:
         duration: Test duration in seconds
         use_gui: Whether to use GUI
     """
-    print("Running WBC test (MPC + Whole-Body Control)...")
+    use_torque_control = os.environ.get("WBC_TORQUE_CONTROL", "0") != "0"
+    use_hybrid_control = os.environ.get("WBC_HYBRID_CONTROL", "0") != "0"
+
+    print("="*70)
+    print("WBC STANDING TEST (MPC + Whole-Body Control)")
+    print("="*70)
+    if use_hybrid_control:
+        print("Control mode: HYBRID (position on hips/knees, torque on ankles)")
+    elif use_torque_control:
+        print("Control mode: TORQUE_CONTROL (testing torque computation)")
+    else:
+        print("Control mode: POSITION_CONTROL (stable baseline)")
+    print()
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -572,25 +588,62 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
         robot_id=sim.robot_id,
         joint_dict=sim.joint_dict,
         mpc_params=mpc_params,
-        wbc_params=wbc_params
+        wbc_params=wbc_params,
+        use_torque_control=use_torque_control,
+        use_hybrid_control=use_hybrid_control
     )
 
     print("Controller initialized")
     print(f"Control frequency: {1.0/mpc_params.dt:.0f}Hz")
     print(f"MPC horizon: {mpc_params.prediction_horizon} steps")
 
-    # Enable position control
-    for joint_name, target_angle in standing_config.items():
-        joint_idx = sim.get_joint_index(joint_name)
-        if joint_idx is not None:
-            p.setJointMotorControl2(
-                bodyIndex=sim.robot_id,
-                jointIndex=joint_idx,
-                controlMode=p.POSITION_CONTROL,
-                targetPosition=target_angle,
-                force=100.0,
-                maxVelocity=10.0
-            )
+    if use_hybrid_control:
+        # Hybrid mode: disable motors on torque-controlled joints (ankles), position control on others
+        for joint_name in standing_config.keys():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                if joint_name in controller.torque_controlled_joints:
+                    # Ankle: disable for torque control
+                    p.setJointMotorControl2(
+                        bodyIndex=sim.robot_id,
+                        jointIndex=joint_idx,
+                        controlMode=p.VELOCITY_CONTROL,
+                        force=0.0
+                    )
+                else:
+                    # Hip/Knee: setup position control
+                    p.setJointMotorControl2(
+                        bodyIndex=sim.robot_id,
+                        jointIndex=joint_idx,
+                        controlMode=p.POSITION_CONTROL,
+                        targetPosition=standing_config[joint_name],
+                        force=100.0,
+                        maxVelocity=10.0
+                    )
+    elif not use_torque_control:
+        # Enable position control (original stable mode)
+        for joint_name, target_angle in standing_config.items():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                p.setJointMotorControl2(
+                    bodyIndex=sim.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.POSITION_CONTROL,
+                    targetPosition=target_angle,
+                    force=100.0,
+                    maxVelocity=10.0
+                )
+    else:
+        # Disable default motors for torque control
+        for joint_name in standing_config.keys():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                p.setJointMotorControl2(
+                    bodyIndex=sim.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    force=0.0
+                )
 
     print(f"Running simulation for {duration}s...\n")
 
@@ -606,17 +659,45 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
                 joint_commands = controller.update(control_dt)
 
                 # Apply commands
-                for joint_name, target_angle in joint_commands.items():
-                    joint_idx = sim.get_joint_index(joint_name)
-                    if joint_idx is not None:
-                        p.setJointMotorControl2(
-                            bodyIndex=sim.robot_id,
-                            jointIndex=joint_idx,
-                            controlMode=p.POSITION_CONTROL,
-                            targetPosition=target_angle,
-                            force=100.0,
-                            maxVelocity=10.0
-                        )
+                if use_hybrid_control:
+                    # Apply hybrid commands (mix of torque and position)
+                    for joint_name, command in joint_commands.items():
+                        joint_idx = sim.get_joint_index(joint_name)
+                        if joint_idx is not None:
+                            if isinstance(command, dict) and command.get('mode') == 'torque':
+                                # Apply torque
+                                p.setJointMotorControl2(
+                                    bodyIndex=sim.robot_id,
+                                    jointIndex=joint_idx,
+                                    controlMode=p.TORQUE_CONTROL,
+                                    force=command['value']
+                                )
+                            elif isinstance(command, dict) and command.get('mode') == 'position':
+                                # Apply position (already set during initialization, just update if needed)
+                                p.setJointMotorControl2(
+                                    bodyIndex=sim.robot_id,
+                                    jointIndex=joint_idx,
+                                    controlMode=p.POSITION_CONTROL,
+                                    targetPosition=command['value'],
+                                    force=100.0,
+                                    maxVelocity=10.0
+                                )
+                elif use_torque_control:
+                    # Apply torques directly
+                    sim.set_joint_torques(joint_commands)
+                else:
+                    # Apply position commands (original mode)
+                    for joint_name, target_angle in joint_commands.items():
+                        joint_idx = sim.get_joint_index(joint_name)
+                        if joint_idx is not None:
+                            p.setJointMotorControl2(
+                                bodyIndex=sim.robot_id,
+                                jointIndex=joint_idx,
+                                controlMode=p.POSITION_CONTROL,
+                                targetPosition=target_angle,
+                                force=100.0,
+                                maxVelocity=10.0
+                            )
 
             except Exception as e:
                 print(f"Controller error at t={sim_time:.3f}s: {e}")
@@ -717,6 +798,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
                 force=0.0
             )
 
+    # Apply position control to hold posture (as in stable standing)
     for joint_name, target_angle in standing_config.items():
         joint_idx = sim.get_joint_index(joint_name)
         if joint_idx is None:
@@ -778,6 +860,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
             wbc_params=wbc_params,
             walking_params=walking_params
         )
+        controller.walking_params.diag_freeze_contacts = True  # force double support during diagnostics
         controller.start()
 
     while sim.time < duration:
