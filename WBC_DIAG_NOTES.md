@@ -93,8 +93,49 @@ Scope: Walking-mode stability investigation with `WALKING_WBC=1`
 3. **Cascading Instability**
    - Contact loss → no reaction forces → posture PD alone → saturation → failure
 
-## Next Steps (Recommended)
-1) **Add Cartesian foot stiffness constraints** (not just damping) to WBC QP formulation - anchor stance feet with position error feedback
-2) **Increase stance foot damping** from kd=60 to 100-200 for stronger foot anchoring
-3) **Add explicit contact force regularization** - penalize large deviations from steady-state GRF (~62 N/foot)
-4) Consider using **inverse kinematics for stance feet** - enforce zero foot velocity as hard constraint, not soft task
+---
+
+### Test #4: Cartesian Foot Stiffness Constraints ✅
+**Objective:** Add position/velocity feedback to anchor stance feet
+
+**Implementation:**
+- Added `w_foot_anchor`, `foot_stiffness_kp`, `foot_damping_kd` parameters to WBCParams
+- Modified WBC QP objective: `minimize ||A*f - wrench||² + ||f - f_anchor||²`
+- `f_anchor = kp * (pos_ref - pos_current) - kd * vel_current`
+- Tested with hybrid control mode
+
+**Results:**
+| Config | Forces (N/foot) | Contact Loss | Failure Time | Notes |
+|--------|-----------------|--------------|--------------|-------|
+| No anchoring | 54-184 (wild oscillation) | t=0.12s | ~2s | Baseline |
+| w=5, kp=100, kd=50 | 87-95 (stable) | t=0.12s | ~2s | Better forces but still fails |
+| w=10, kp=300, kd=100 | 73-80 (near ideal) | t=0.12s | ~2s | Best force stability |
+| w=50, kp=500, kd=200 | 34-38 (too weak) | t=0.12s | ~2s | QP solver issues |
+
+**Key Findings:**
+- ✅ **Foot anchoring stabilizes forces** - reduced oscillations significantly
+- ✅ **Optimal balance:** w=10, kp=300, kd=100 gives forces closest to ideal (~62 N/foot)
+- ❌ **Contact loss at t=0.12s persists** regardless of anchoring strength
+- ❌ **Robot still fails** after ~2 seconds
+
+**Conclusion:** Cartesian foot stiffness helps but is insufficient alone. The contact loss at t=0.12s appears to be a deeper issue (possibly PyBullet simulation artifact, contact solver parameters, or fundamental dynamic instability).
+
+---
+
+## Status Summary
+
+**What Works:**
+- ✅ WBC standing with POSITION_CONTROL (Roll=0.2°, Pitch=0.1°)
+- ✅ Cartesian foot stiffness reduces force oscillations
+- ✅ Hybrid control provides incremental WBC testing capability
+
+**What Doesn't Work:**
+- ❌ WBC with pure TORQUE_CONTROL (fails in ~0.9s)
+- ❌ WBC with HYBRID_CONTROL (fails in ~2s, better but insufficient)
+- ❌ Persistent contact loss at t=0.12s across all configurations
+
+## Next Steps (Revised)
+1) **Investigate contact loss at t=0.12s** - PyBullet contact solver settings, timestep, or numerical issues
+2) **Try different QP solver** - OSQP may have numerical issues, try ECOS or CLARABEL
+3) **Add contact force continuity constraints** - penalize sudden force changes between timesteps
+4) **Consider full-body inverse dynamics** - compute desired joint torques directly from tasks without force optimization intermediate step

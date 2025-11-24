@@ -36,6 +36,11 @@ class WBCParams:
     w_force_regularization: float = 0.01  # Weight for force regularization
     w_torque_regularization: float = 0.001  # Weight for torque regularization
 
+    # Cartesian foot stiffness (NEW - for stability)
+    w_foot_anchor: float = 0.0        # Weight for foot position anchoring (0 = disabled)
+    foot_stiffness_kp: float = 100.0  # Cartesian stiffness (N/m)
+    foot_damping_kd: float = 50.0     # Cartesian damping (N·s/m)
+
     # Numerical stability
     epsilon: float = 1e-6
 
@@ -89,7 +94,9 @@ class WholeBodyController:
     def compute_ground_reaction_forces(self,
                                       desired_base_accel: np.ndarray,
                                       foot_positions: List[np.ndarray],
-                                      foot_contacts: List[bool]) -> np.ndarray:
+                                      foot_contacts: List[bool],
+                                      foot_reference_positions: List[np.ndarray] = None,
+                                      foot_velocities: List[np.ndarray] = None) -> np.ndarray:
         """
         Compute optimal ground reaction forces using QP
 
@@ -97,6 +104,8 @@ class WholeBodyController:
             desired_base_accel: Desired base acceleration [ax, ay, az, alpha_x, alpha_y, alpha_z]
             foot_positions: List of foot positions in world frame
             foot_contacts: List of boolean flags indicating if foot is in contact
+            foot_reference_positions: List of desired foot positions (for anchoring), optional
+            foot_velocities: List of foot velocities (for damping), optional
 
         Returns:
             ground_forces: Nx3 array of ground reaction forces for each foot
@@ -130,11 +139,39 @@ class WholeBodyController:
 
         desired_wrench = np.concatenate([desired_force, desired_torque])
 
-        # Objective: minimize ||A*f - desired_wrench||^2 + regularization
-        objective = cp.Minimize(
-            self.params.w_force_tracking * cp.sum_squares(A @ f - desired_wrench) +
+        # Build objective function terms
+        objective_terms = [
+            self.params.w_force_tracking * cp.sum_squares(A @ f - desired_wrench),
             self.params.w_force_regularization * cp.sum_squares(f)
-        )
+        ]
+
+        # Add Cartesian foot anchoring term (if enabled and data provided)
+        if (self.params.w_foot_anchor > 0 and
+            foot_reference_positions is not None and
+            foot_velocities is not None):
+
+            # Compute desired anchoring forces for each contact foot
+            f_anchor = np.zeros(num_contact_feet * 3)
+            for i, contact_idx in enumerate(contact_indices):
+                # Position error
+                pos_error = foot_reference_positions[contact_idx] - foot_positions[contact_idx]
+                # Velocity (we want zero velocity for stance feet)
+                vel = foot_velocities[contact_idx]
+
+                # Desired anchoring force: F = kp * pos_error - kd * vel
+                f_desired = (self.params.foot_stiffness_kp * pos_error -
+                            self.params.foot_damping_kd * vel)
+
+                # Store in anchor force vector
+                f_anchor[i*3:(i+1)*3] = f_desired
+
+            # Add anchoring objective term
+            objective_terms.append(
+                self.params.w_foot_anchor * cp.sum_squares(f - f_anchor)
+            )
+
+        # Combine all objective terms
+        objective = cp.Minimize(cp.sum(objective_terms))
 
         # Constraints
         constraints = []

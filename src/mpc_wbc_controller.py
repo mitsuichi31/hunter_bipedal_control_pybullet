@@ -78,6 +78,9 @@ class MPCWBCController:
         # State
         self.time = 0.0
 
+        # Foot reference positions (for anchoring)
+        self.foot_reference_positions = None  # Will be set on first update
+
         # Torque control parameters (matching walking controller)
         # Allow override via environment variable for diagnostics
         import os
@@ -191,11 +194,20 @@ class MPCWBCController:
             - self.height_kd * com_dz
         )
 
-        # 5. WBC: Compute ground reaction forces
+        # Initialize foot reference positions on first update (for anchoring)
+        if self.foot_reference_positions is None:
+            self.foot_reference_positions = [fp.copy() for fp in foot_positions]
+
+        # Get foot velocities for anchoring
+        foot_velocities = self._get_foot_velocities()
+
+        # 5. WBC: Compute ground reaction forces (with foot anchoring)
         ground_forces = self.wbc.compute_ground_reaction_forces(
             desired_base_accel=desired_base_accel,
             foot_positions=foot_positions,
-            foot_contacts=foot_contacts
+            foot_contacts=foot_contacts,
+            foot_reference_positions=self.foot_reference_positions,
+            foot_velocities=foot_velocities
         )
 
         # 6. Convert forces to joint commands
@@ -285,6 +297,40 @@ class MPCWBCController:
                     foot_contacts.append(foot_pos[2] < 0.05)
 
         return foot_positions, foot_contacts
+
+    def _get_foot_velocities(self) -> List[np.ndarray]:
+        """
+        Get foot velocities in world frame
+
+        Returns:
+            foot_velocities: List of foot velocities [vx, vy, vz]
+        """
+        foot_velocities = []
+
+        # Find foot links
+        foot_links = []
+        for i in range(p.getNumJoints(self.robot_id)):
+            joint_info = p.getJointInfo(self.robot_id, i)
+            link_name = joint_info[12].decode('utf-8')
+            if 'foot' in link_name.lower() or ('l5' in link_name or 'r5' in link_name):
+                foot_links.append(i)
+
+        for link_idx in foot_links:
+            # Get link velocity
+            link_state = p.getLinkState(self.robot_id, link_idx, computeLinkVelocity=1)
+            linear_velocity = np.array(link_state[6])  # World linear velocity
+            foot_velocities.append(linear_velocity)
+
+        # Ensure we have at least 2 feet (fallback)
+        if len(foot_velocities) < 2:
+            for joint_name in ['leg_l5_joint', 'leg_r5_joint']:
+                if joint_name in self.joint_dict:
+                    idx = self.joint_dict[joint_name]
+                    link_state = p.getLinkState(self.robot_id, idx, computeLinkVelocity=1)
+                    linear_velocity = np.array(link_state[6])
+                    foot_velocities.append(linear_velocity)
+
+        return foot_velocities
 
     def _compute_hybrid_control(self,
                                 ground_forces: np.ndarray,
