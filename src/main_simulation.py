@@ -665,7 +665,7 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     print("\nWBC test completed!")
 
 
-def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
+def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable_estop: bool = False):
     """
     Run WBC-based walking simulation (Phase 3)
 
@@ -736,7 +736,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
         kd_swing=10.0,
         kd_stance=20.0,
         transition_duration=0.05,
-        enable_emergency_stop=True,  # Re-enabled after testing
+        enable_emergency_stop=not disable_estop,
     )
 
     # Create WBC Walking Controller
@@ -847,6 +847,8 @@ if __name__ == "__main__":
                        help="Simulation duration (seconds)")
     parser.add_argument("--no-gui", action="store_true",
                        help="Disable GUI")
+    parser.add_argument("--disable-walking-estop", action="store_true",
+                       help="Disable walking-mode emergency stop (for debugging)")
 
     args = parser.parse_args()
 
@@ -859,4 +861,4 @@ if __name__ == "__main__":
     elif args.mode == "wbc":
         run_wbc_test(duration=args.duration, use_gui=use_gui)
     elif args.mode == "walking":
-        run_walking_simulation(duration=args.duration, use_gui=use_gui)
+        run_walking_simulation(duration=args.duration, use_gui=use_gui, disable_estop=args.disable_walking_estop)

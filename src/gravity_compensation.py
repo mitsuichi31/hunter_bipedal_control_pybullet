@@ -98,30 +98,38 @@ class GravityCompensation:
         """
         self._cache_joint_info()
 
-        # Get current state for all joints
+        # Build full joint arrays (all joints, including fixed) because PyBullet
+        # expects numDoF == getNumJoints for calculateInverseDynamics.
+        num_total = p.getNumJoints(self.robot_id)
+        full_pos = [0.0] * num_total
+        full_vel = [0.0] * num_total
+        full_acc = [0.0] * num_total
+
         if joint_positions is None:
-            joint_states = p.getJointStates(self.robot_id, self._actuated_joints)
-            joint_positions = [state[0] for state in joint_states]
+            # Use current joint states as base
+            states = p.getJointStates(self.robot_id, list(range(num_total)))
+            full_pos = [s[0] for s in states]
         else:
+            # Inject provided actuated positions into full list
             num_actuated = len(self._actuated_joints)
             if len(joint_positions) != num_actuated:
                 raise ValueError(f"Expected {num_actuated} joint positions, got {len(joint_positions)}")
-            joint_positions = list(joint_positions)
-
-        # Zero velocity and acceleration for gravity-only calculation
-        joint_velocities = [0.0] * len(self._actuated_joints)
-        joint_accelerations = [0.0] * len(self._actuated_joints)
+            states = p.getJointStates(self.robot_id, list(range(num_total)))
+            full_pos = [s[0] for s in states]
+            for i, joint_idx in enumerate(self._actuated_joints):
+                full_pos[joint_idx] = joint_positions[i]
 
         try:
             # Try using calculateInverseDynamics
             # Note: This may not work for all robot configurations
             all_torques = p.calculateInverseDynamics(
                 self.robot_id,
-                joint_positions,
-                joint_velocities,
-                joint_accelerations
+                full_pos,
+                full_vel,
+                full_acc
             )
-            gravity_torques = np.array(all_torques)
+            # Extract only actuated joints
+            gravity_torques = np.array([all_torques[idx] for idx in self._actuated_joints])
 
         except:
             # Fallback: Use simplified gravity computation

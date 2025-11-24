@@ -141,7 +141,7 @@ class WBCWalkingParams:
     control_dt: float = 0.01         # Control update rate (seconds, 100Hz)
 
     # Emergency stop
-    enable_emergency_stop: bool = True  # Enable automatic emergency stop on instability
+    enable_emergency_stop: bool = True   # Enable automatic emergency stop (can be disabled via CLI flag)
 
 
 class WBCWalkingController:
