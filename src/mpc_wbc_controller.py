@@ -248,22 +248,23 @@ class MPCWBCController:
         roll = euler[0]
 
         # Compute corrective joint angles (simplified)
-        hip_pitch_correction = -pitch * 0.5
-        ankle_pitch_correction = -pitch * 0.3
-        hip_roll_correction = -roll * 0.3
+        # Use VERY small corrections for straight-leg stability
+        hip_pitch_correction = -pitch * 0.1  # Reduced from 0.5
+        ankle_pitch_correction = -pitch * 0.05  # Reduced from 0.3
+        hip_roll_correction = -roll * 0.1  # Reduced from 0.3
 
-        # Base configuration
+        # Base configuration: STRAIGHT LEGS (critical for stability!)
         base_config = {
             'leg_l1_joint': -0.1 + hip_roll_correction,
             'leg_l2_joint': 0.0,
-            'leg_l3_joint': -0.4 + hip_pitch_correction,
-            'leg_l4_joint': 0.8,
-            'leg_l5_joint': -0.4 - hip_pitch_correction + ankle_pitch_correction,
+            'leg_l3_joint': 0.0 + hip_pitch_correction,  # Straight, not -0.4
+            'leg_l4_joint': 0.0,                         # Straight, not 0.8
+            'leg_l5_joint': 0.0 - hip_pitch_correction + ankle_pitch_correction,  # Straight
             'leg_r1_joint': 0.1 - hip_roll_correction,
             'leg_r2_joint': 0.0,
-            'leg_r3_joint': -0.4 + hip_pitch_correction,
-            'leg_r4_joint': 0.8,
-            'leg_r5_joint': -0.4 - hip_pitch_correction + ankle_pitch_correction,
+            'leg_r3_joint': 0.0 + hip_pitch_correction,  # Straight, not -0.4
+            'leg_r4_joint': 0.0,                         # Straight, not 0.8
+            'leg_r5_joint': 0.0 - hip_pitch_correction + ankle_pitch_correction,  # Straight
         }
 
         return base_config

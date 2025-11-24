@@ -557,12 +557,14 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
         max_zmp_offset=0.08
     )
 
+    # Use tuned WBC parameters (Phase 2)
     wbc_params = WBCParams(
-        friction_coef=0.5,
+        friction_coef=0.6,              # Increased from 0.5
         max_normal_force=500.0,
         min_normal_force=1.0,
-        w_force_tracking=1.0,
-        w_force_regularization=0.01
+        w_force_tracking=10.0,          # Increased from 1.0 (critical!)
+        w_force_regularization=0.01,    # Decreased from 0.1
+        w_torque_regularization=0.001
     )
 
     controller = MPCWBCController(
