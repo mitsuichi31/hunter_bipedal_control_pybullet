@@ -665,14 +665,6 @@ class WBCWalkingController:
         # Compute joint torques using simplified WBC approach
         torques = self._compute_torques(robot_state, gait_targets, current_contact)
 
-        # Debug: Print torques periodically
-        if abs(self.time - 0.1) < 0.01 or abs(self.time - 0.5) < 0.01:
-            torque_magnitudes = [abs(t) for t in torques.values()]
-            max_torque = max(torque_magnitudes) if torque_magnitudes else 0.0
-            avg_torque = sum(torque_magnitudes) / len(torque_magnitudes) if torque_magnitudes else 0.0
-            print(f"[DEBUG t={self.time:.2f}s] Torques - Max: {max_torque:.2f} Nm, Avg: {avg_torque:.2f} Nm")
-            print(f"  Sample: {list(torques.items())[:3]}")
-
         return torques
 
     def reset(self):
