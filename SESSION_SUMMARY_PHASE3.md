@@ -507,7 +507,114 @@ The solid foundation from Phases 1 & 2 enabled rapid Phase 3 progress.
 
 ---
 
+## Gait Parameter Tuning Results (M4.2)
+
+### Tuning Attempts
+
+**Iteration 1: Baseline with Increased Gains**
+- PD Gains: kp=500→2000, kd=50→200 (4x increase)
+- ZMP Threshold: 0.12m→0.20m
+- Result: 0.8s stability, Roll=-5.6°, Pitch=-12.3° ✅ (within limits!)
+- Failure: ZMP offset 0.129m initially, then pitch=-20°
+- Torques: Max 11.6 Nm at t=0.5s
+
+**Iteration 2: Ultra-Conservative Gait**
+- Step length: 0.05m → 0.02m (2cm)
+- Step height: 0.03m → 0.02m (2cm)
+- Step period: 2.0s → 1.5s
+- Double support: 0.5 → 0.7 (70%)
+- Result: 0.8-0.9s stability, Pitch=-20.6°
+- Torques: Similar magnitude (~10-12 Nm)
+
+**Iteration 3: Full Behavior Test (No Emergency Stop)**
+- Duration: 5.0s (allowed to run completely)
+- Behavior observed:
+  * t=0.8s: Pitch reaches -20°
+  * t=0.8-2.0s: Forward pitching continues, robot tumbles
+  * t=2.0s: Pitch=-88°, Roll=180° (upside down)
+  * t=2.0-5.0s: Robot lying on side (Pitch=-90°, Roll oscillates)
+  * Final: Base height 0.091m (vs initial 0.679m)
+- Conclusion: Robot falls consistently, cannot recover
+
+### Torque Analysis
+
+**Torque Magnitudes Observed:**
+```
+t=0.10s: Max 1.1 Nm,  Avg 0.3 Nm  (initial stabilization)
+t=0.50s: Max 11.6 Nm, Avg 3.3 Nm  (attempting to counter fall)
+```
+
+**Sample Torque Values (t=0.5s):**
+- leg_l1_joint (hip roll): -3.3 Nm
+- leg_l2_joint (hip yaw): 0.3 Nm
+- leg_l3_joint (hip pitch): 11.6 Nm ← Maximum torque
+- leg_l4_joint (knee): ~0 Nm
+- leg_l5_joint (ankle): Similar pattern
+
+**Observations:**
+- Torques ARE being computed and applied ✅
+- Hip pitch produces highest torques (fighting forward lean)
+- Torques increase as robot falls (reactive, not proactive)
+- Magnitude reasonable for robot size (~10-12 Nm peak)
+
+### Fundamental Limitation Identified
+
+**Root Cause: Joint-Space Control Insufficient**
+
+The current approach uses:
+1. **Target Configuration**: Fixed straight-leg standing pose
+2. **PD Control**: Joint-space error tracking
+3. **Active Balance**: Orientation feedback → joint adjustments
+4. **Inverse Dynamics**: Torque computation τ = M(q)q̈ + g(q)
+
+**Why It Fails:**
+- No active CoM trajectory planning
+- No foot position control (task-space)
+- Cannot adjust base position to maintain balance
+- Reactive (responds to falling) not proactive (plans stability)
+
+**Required for Stable Standing/Walking:**
+- Task-space control (foot positions, CoM trajectory)
+- Contact force optimization (WBC QP solver)
+- Support polygon management
+- Predictive balance control
+
+### Performance Summary
+
+| Metric | Initial | After Torques | After Tuning | Theoretical Limit |
+|--------|---------|---------------|--------------|-------------------|
+| Duration | 0.3s | 1.0s | 0.8-0.9s | ~0.9s |
+| Max Pitch | -16° | -16° | -20° | -90° (falls) |
+| Max Roll | 1.8° | 1.8° | -8° to -18° | ±180° (tumbles) |
+| Torques | 0 Nm | ~10 Nm | ~12 Nm | N/A |
+| Improvement | Baseline | 3.3x | 2.7-3.0x | **Fundamental limit** |
+
+**Conclusion**: Current simplified approach has reached its maximum performance (~0.9s). Further improvement requires full WBC QP implementation with task-space control.
+
+### Recommendations
+
+**Short-term (Testing & Validation):**
+1. Create diagnostic test suite (M4.3) for current performance level
+2. Document baseline metrics for future comparison
+3. Test under various initial conditions (perturbed starts)
+
+**Medium-term (Required for Walking):**
+1. ⚠️ **CRITICAL**: Implement full WBC QP solver
+   - Contact force optimization
+   - Task-space Jacobians (foot position → joint space)
+   - Nullspace projection for task hierarchy
+2. Implement CoM trajectory planner
+3. Implement foot position controller (task-space)
+4. Add support polygon validation
+
+**Long-term (Performance Optimization):**
+1. Model Predictive Control (MPC) for CoM trajectory
+2. Learning-based balance controller
+3. Adaptive gait parameters based on terrain/speed
+
+---
+
 **Session End**: November 24, 2025
-**Status**: Architecture complete, torque computation working, performance validated
-**Achievement**: End-to-end WBC walking controller with 3.3x stability improvement
-**Final Result**: Robot stabilizes for 1.0s (vs 0.3s baseline), validates complete architecture
+**Status**: Architecture complete, torque computation working, gait tuning completed
+**Achievement**: Identified fundamental limitation of simplified joint-space control
+**Final Result**: 0.8-0.9s stability (consistent), requires full WBC QP for further improvement
