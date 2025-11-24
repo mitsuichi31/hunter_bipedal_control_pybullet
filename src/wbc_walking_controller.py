@@ -107,6 +107,9 @@ class ContactTransitionManager:
 @dataclass
 class WBCWalkingParams:
     """Parameters for WBC walking controller"""
+    # Hybrid control mode (position on hips/knees, torque on ankles)
+    use_hybrid_control: bool = False  # Enable hybrid control for stability
+
     # Control gains - Body orientation
     kp_orientation: float = 60.0    # Body orientation tracking gain (reduced)
     kd_orientation: float = 8.0     # Body orientation damping
@@ -221,10 +224,25 @@ class WBCWalkingController:
         # Foot link indices
         self.left_foot_link, self.right_foot_link = self._find_foot_links()
 
+        # Hybrid control: define which joints use which control mode
+        if self.walking_params.use_hybrid_control:
+            self.torque_controlled_joints = ['leg_l5_joint', 'leg_r5_joint']  # Ankles
+            self.position_controlled_joints = [
+                'leg_l1_joint', 'leg_l2_joint', 'leg_l3_joint', 'leg_l4_joint',  # Left hip/knee
+                'leg_r1_joint', 'leg_r2_joint', 'leg_r3_joint', 'leg_r4_joint',  # Right hip/knee
+            ]
+        else:
+            self.torque_controlled_joints = list(self.joint_dict.keys())  # All joints
+            self.position_controlled_joints = []
+
         print(f"WBC Walking Controller initialized")
         print(f"  Step period: {self.gait_params.step_period:.2f}s")
         print(f"  Step length: {self.gait_params.step_length:.3f}m")
         print(f"  Control frequency: {1.0/self.walking_params.control_dt:.0f}Hz")
+        if self.walking_params.use_hybrid_control:
+            print(f"  Hybrid Control: Position on hips/knees, Torque on ankles")
+            print(f"    Torque-controlled: {self.torque_controlled_joints}")
+            print(f"    Position-controlled: {self.position_controlled_joints}")
 
     def _find_foot_links(self) -> Tuple[int, int]:
         """Find link indices for feet"""
@@ -553,7 +571,10 @@ class WBCWalkingController:
         - Add gravity compensation and mild damping
         """
         if not self.is_active:
-            return {name: 0.0 for name in self.joint_dict.keys()}
+            if self.walking_params.use_hybrid_control:
+                return {name: {'mode': 'torque', 'value': 0.0} for name in self.joint_dict.keys()}
+            else:
+                return {name: 0.0 for name in self.joint_dict.keys()}
 
         # Desired base accel from tasks (6D)
         base_accel, _ = self.task_hierarchy.get_desired_acceleration()
@@ -630,7 +651,62 @@ class WBCWalkingController:
             )
             self._diag_steps_logged += 1
 
-        return self._map_torques_to_dict(total_torques)
+        # Return torques or hybrid commands based on mode
+        if self.walking_params.use_hybrid_control:
+            return self._create_hybrid_commands(total_torques)
+        else:
+            return self._map_torques_to_dict(total_torques)
+
+    def _create_hybrid_commands(self, torques_array: np.ndarray) -> Dict[str, Dict]:
+        """
+        Create hybrid control commands (position + torque)
+
+        Args:
+            torques_array: WBC computed torques in actuated order
+
+        Returns:
+            Dictionary with {joint_name: {'mode': 'torque'|'position', 'value': float}}
+        """
+        # Get standing posture targets
+        standing_config = {
+            'leg_l1_joint': -0.1,
+            'leg_l2_joint': 0.0,
+            'leg_l3_joint': 0.0,
+            'leg_l4_joint': 0.0,
+            'leg_l5_joint': 0.0,
+            'leg_r1_joint': 0.1,
+            'leg_r2_joint': 0.0,
+            'leg_r3_joint': 0.0,
+            'leg_r4_joint': 0.0,
+            'leg_r5_joint': 0.0,
+        }
+
+        # Map torques array to dict
+        torques_dict = self._map_torques_to_dict(torques_array)
+
+        # Create hybrid commands
+        hybrid_commands = {}
+        for joint_name in self.joint_dict.keys():
+            if joint_name in self.torque_controlled_joints:
+                # Torque control for ankles
+                hybrid_commands[joint_name] = {
+                    'mode': 'torque',
+                    'value': torques_dict[joint_name]
+                }
+            elif joint_name in self.position_controlled_joints:
+                # Position control for hips/knees
+                hybrid_commands[joint_name] = {
+                    'mode': 'position',
+                    'value': standing_config.get(joint_name, 0.0)
+                }
+            else:
+                # Default to zero torque for any unlisted joints
+                hybrid_commands[joint_name] = {
+                    'mode': 'torque',
+                    'value': 0.0
+                }
+
+        return hybrid_commands
 
     def _detect_and_handle_transitions(self, current_contact: Tuple[bool, bool]):
         """
@@ -679,8 +755,12 @@ class WBCWalkingController:
 
         # Update at control frequency
         if self.time - self.last_control_update < self.walking_params.control_dt:
-            # Return zero torques if not time to update yet
-            return {name: 0.0 for name in self.joint_dict.keys()}
+            # Return zero torques/commands if not time to update yet
+            if self.walking_params.use_hybrid_control:
+                # Return zero torque commands in hybrid format
+                return {name: {'mode': 'torque', 'value': 0.0} for name in self.joint_dict.keys()}
+            else:
+                return {name: 0.0 for name in self.joint_dict.keys()}
 
         self.last_control_update = self.time
 
@@ -723,7 +803,10 @@ class WBCWalkingController:
                 if self.walking_params.enable_emergency_stop:
                     print("🛑 EMERGENCY STOP: Halting walking controller")
                     self.stop()
-                    return {name: 0.0 for name in self.joint_dict.keys()}
+                    if self.walking_params.use_hybrid_control:
+                        return {name: {'mode': 'torque', 'value': 0.0} for name in self.joint_dict.keys()}
+                    else:
+                        return {name: 0.0 for name in self.joint_dict.keys()}
 
         # Build task hierarchy based on contact phase
         # (Task weights will be modulated by transition_weight in future)

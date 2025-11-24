@@ -902,7 +902,9 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
             foot_damping_kd=anchor_kd
         )
         print(f"[WBC] Foot anchoring: w={anchor_weight}, kp={anchor_kp}, kd={anchor_kd}")
+
         walking_params = WBCWalkingParams(
+            use_hybrid_control=use_hybrid,
             kp_orientation=60.0,
             kd_orientation=8.0,
             kp_com=20.0,
@@ -925,8 +927,42 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
 
     while sim.time < duration:
         if controller is not None:
-            torques = controller.update(sim.dt)
-            sim.set_joint_torques(torques)
+            commands = controller.update(sim.dt)
+
+            # Handle hybrid commands if WBC_HYBRID_CONTROL is enabled
+            if use_hybrid and use_wbc:
+                # Apply hybrid commands (mixed position and torque control)
+                for joint_name, command in commands.items():
+                    joint_idx = sim.get_joint_index(joint_name)
+                    if joint_idx is None:
+                        continue
+
+                    if command.get('mode') == 'torque':
+                        # Torque control
+                        p.setJointMotorControl2(
+                            bodyIndex=sim.robot_id,
+                            jointIndex=joint_idx,
+                            controlMode=p.VELOCITY_CONTROL,
+                            force=0
+                        )
+                        p.setJointMotorControl2(
+                            bodyIndex=sim.robot_id,
+                            jointIndex=joint_idx,
+                            controlMode=p.TORQUE_CONTROL,
+                            force=command['value']
+                        )
+                    elif command.get('mode') == 'position':
+                        # Position control
+                        p.setJointMotorControl2(
+                            bodyIndex=sim.robot_id,
+                            jointIndex=joint_idx,
+                            controlMode=p.POSITION_CONTROL,
+                            targetPosition=command['value'],
+                            force=500
+                        )
+            else:
+                # Pure torque control (backwards compatible)
+                sim.set_joint_torques(commands)
 
         # Step simulation
         sim.step()
