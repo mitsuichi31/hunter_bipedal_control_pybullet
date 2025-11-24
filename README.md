@@ -9,7 +9,7 @@ PyBulletを使用したHunter 2足歩行ロボットのシミュレーション�
 | **standing** | ✅ **完全動作** | PD制御による立位保持（Roll=0.2°） |
 | **standing-mpc** | ✅ **完全動作** | MPC+ZMP制御による立位保持（Roll=0.2°） |
 | **wbc** | ✅ **Phase 2完了** | WBC立位制御（Roll=0.00°, Pitch=0.03°） |
-| **walking** | ⚠️ **研究段階** | アーキテクチャ的制約あり、Phase 3で実装予定 |
+| **walking** | 🚧 **Phase 3進行中** | WBC歩行アーキテクチャ実装中（M1-3完了、M4-5残） |
 
 ## 特徴
 
@@ -45,6 +45,36 @@ PyBulletを使用したHunter 2足歩行ロボットのシミュレーション�
 
 詳細は [STABILITY_IMPROVEMENT_PLAN.md](STABILITY_IMPROVEMENT_PLAN.md) を参照してください。
 
+### Phase 3: WBC歩行モード（進行中 🚧）
+
+**2025年11月24日開始** - アーキテクチャ実装進行中
+
+#### 完了したマイルストーン
+- ✅ **M1: 接触状態機械**: 接触フェーズ管理（DS/LS/RS）、接触検出、6/6テスト合格
+- ✅ **M2: WBCタスク**: 遊脚追跡タスク、支持脚制約、階層的タスク統合
+- ✅ **M3: 接触遷移**: スムーズ遷移（50ms）、安全チェック強化、緊急停止
+- ✅ **M4.1: 超保守的歩容**: 5cmステップ、2s周期、50%二重支持
+- ✅ **M5.1: 統合**: main_simulation.py統合、エンドツーエンド検証
+
+#### 実装されたアーキテクチャ
+```
+歩容生成器 → 接触FSM → タスク階層 → WBC QP → 逆動力学 → トルク
+```
+
+#### 残作業（M4.2、M4.3、M5.2）
+- ⚠️ 実際のトルク計算（WBC QP + 逆動力学の完全統合）
+- ⚠️ 歩容パラメータチューニング（トルク実装後）
+- ⚠️ 包括的テストスイート
+- ⚠️ ドキュメント最終更新
+
+#### 新規ファイル
+- `src/contact_state_machine.py` - 接触フェーズ管理
+- `src/test_contact_state_machine.py` - 接触FSMテスト（6/6合格）
+- `src/wbc_walking_controller.py` - WBC歩行制御器（再設計）
+- `PHASE3_WALKING_PLAN.md` - Phase 3詳細計画
+
+詳細は [PHASE3_WALKING_PLAN.md](PHASE3_WALKING_PLAN.md) を参照してください。
+
 ## プロジェクト構成
 
 ```
@@ -72,13 +102,15 @@ hunter/
 │   │
 │   ├── inverse_kinematics.py     # 逆運動学ソルバー
 │   ├── gait_generator.py         # 歩行軌道生成器
-│   ├── wbc_walking_controller.py # WBC歩行制御器（Phase 3予定）
+│   ├── contact_state_machine.py  # 接触状態機械（Phase 3）✅
+│   ├── wbc_walking_controller.py # WBC歩行制御器（Phase 3）🚧
 │   │
 │   ├── test_stability_metrics.py # Phase 1テスト
 │   ├── test_gravity_compensation.py # Phase 1テスト
 │   ├── test_inverse_dynamics.py  # Phase 2テスト
 │   ├── test_phase1_integration.py # Phase 1統合テスト
 │   ├── test_wbc_standing.py      # Phase 2検証テスト
+│   ├── test_contact_state_machine.py # Phase 3テスト（6/6合格）✅
 │   │
 │   └── diagnostics/              # 診断・解析ツール
 │       ├── find_stable_pose.py   # 安定姿勢解析
@@ -90,7 +122,10 @@ hunter/
 │   └── test_all_modes.sh         # 全モードテストスクリプト
 ├── logs/                         # ログファイル保存先
 ├── requirements.txt              # 依存パッケージ
+├── CLAUDE.md                     # Claude Code開発ガイド
 ├── STABILITY_IMPROVEMENT_PLAN.md # Phase 1-4開発計画（Phase 2完了）
+├── PHASE3_WALKING_PLAN.md        # Phase 3詳細実装計画
+├── CONTROL_SYSTEM_OVERVIEW.md    # 制御システムアーキテクチャ概要
 ├── STABILITY_FIX.md              # 立位安定化の技術詳細
 ├── MPC_WALKING_FIX.md            # MPC/歩行調査レポート
 ├── WALKING_MODE_INVESTIGATION.md # 歩行モード詳細調査
