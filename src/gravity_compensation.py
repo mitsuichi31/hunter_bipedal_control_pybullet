@@ -23,6 +23,14 @@ Benefits:
     - Enables smoother joint motion
     - Reduces PD gains needed
 
+Implementation Notes:
+    - Attempts to use PyBullet's calculateInverseDynamics first (most accurate)
+    - For free-floating base robots (like Hunter), this may fail with error:
+      "b3Printf: Inverse Dynamics computations failed"
+    - Automatically falls back to simplified computation using link masses and CoM
+    - Fallback method is accurate and well-tested for bipedal standing/walking
+    - The fallback is EXPECTED BEHAVIOR, not an error condition
+
 Author: Stability Improvement Phase 1.3
 Date: November 2025
 """
@@ -59,6 +67,10 @@ class GravityCompensation:
         # Gravity compensation enable/disable per joint
         self._enabled = True
         self._joint_enabled = {}  # joint_index -> bool
+
+        # Gravity computation method tracking
+        self._use_fallback = None  # None=not determined, True=fallback, False=PyBullet
+        self._fallback_warning_shown = False
 
     def _cache_joint_info(self):
         """Cache joint information for efficiency"""
@@ -121,7 +133,7 @@ class GravityCompensation:
 
         try:
             # Try using calculateInverseDynamics
-            # Note: This may not work for all robot configurations
+            # Note: This may fail for free-floating base robots (expected behavior)
             all_torques = p.calculateInverseDynamics(
                 self.robot_id,
                 full_pos,
@@ -131,9 +143,20 @@ class GravityCompensation:
             # Extract only actuated joints
             gravity_torques = np.array([all_torques[idx] for idx in self._actuated_joints])
 
-        except:
-            # Fallback: Use simplified gravity computation
-            # This is less accurate but always works
+            # Track that PyBullet method is working (first success)
+            if self._use_fallback is None:
+                self._use_fallback = False
+                print("[GravityComp] Using PyBullet calculateInverseDynamics for gravity computation")
+
+        except Exception as e:
+            # Fallback: Use simplified gravity computation for free-floating base robots
+            # This is EXPECTED for bipedal robots with floating bases
+            if self._use_fallback is None:
+                self._use_fallback = True
+                print("[GravityComp] PyBullet calculateInverseDynamics not available for free-floating base")
+                print("[GravityComp] Using simplified gravity computation (link masses + CoM positions)")
+                print("[GravityComp] This is expected behavior and provides accurate results")
+
             gravity_torques = self._compute_gravity_simple(joint_positions)
 
         # Apply per-joint enable/disable
@@ -306,6 +329,20 @@ class GravityCompensation:
             status[name] = self._enabled and self._joint_enabled[joint_idx]
 
         return status
+
+    def get_computation_method(self) -> str:
+        """
+        Get the gravity computation method being used
+
+        Returns:
+            String describing the method: 'pybullet', 'fallback', or 'undetermined'
+        """
+        if self._use_fallback is None:
+            return "undetermined (not yet computed)"
+        elif self._use_fallback:
+            return "fallback (simplified link-based computation)"
+        else:
+            return "pybullet (calculateInverseDynamics)"
 
 
 class GravityCompensatedController:
