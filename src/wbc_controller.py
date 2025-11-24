@@ -17,6 +17,9 @@ from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 import pybullet as p
 
+from stability_metrics import compute_com
+from inverse_dynamics import InverseDynamics
+
 
 @dataclass
 class WBCParams:
@@ -63,6 +66,9 @@ class WholeBodyController:
         # Get robot properties
         self.num_joints = len(joint_dict)
         self.mass = self._compute_total_mass()
+
+        # Inverse dynamics (Phase 2.2)
+        self.inv_dyn = InverseDynamics(robot_id)
 
     def _compute_total_mass(self) -> float:
         """Compute total robot mass from URDF"""
@@ -199,8 +205,8 @@ class WholeBodyController:
         num_contacts = len(contact_indices)
         A = np.zeros((6, 3 * num_contacts))
 
-        # Get CoM position
-        com_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+        # Get accurate CoM position (Phase 1.1)
+        com_pos = compute_com(self.robot_id)
 
         for i, foot_idx in enumerate(contact_indices):
             foot_pos = foot_positions[foot_idx]
@@ -272,6 +278,47 @@ class WholeBodyController:
         # proper Jacobians from PyBullet
         for joint_name in self.joint_dict.keys():
             torques[joint_name] = 0.0
+
+        return torques
+
+    def compute_torques_from_accelerations(self,
+                                          desired_joint_accelerations: Dict[str, float]) -> Dict[str, float]:
+        """
+        Compute joint torques to achieve desired accelerations
+
+        Uses inverse dynamics (Phase 2.2):
+        τ = M(q)q̈ + g(q)
+
+        Args:
+            desired_joint_accelerations: Dictionary of {joint_name: acceleration}
+
+        Returns:
+            torques: Dictionary of {joint_name: torque}
+        """
+        # Get current joint states
+        joint_names = list(self.joint_dict.keys())
+        joint_positions = np.zeros(len(joint_names))
+        joint_velocities = np.zeros(len(joint_names))
+        desired_accels = np.zeros(len(joint_names))
+
+        for i, joint_name in enumerate(joint_names):
+            joint_idx = self.joint_dict[joint_name]
+            state = p.getJointState(self.robot_id, joint_idx)
+            joint_positions[i] = state[0]
+            joint_velocities[i] = state[1]
+            desired_accels[i] = desired_joint_accelerations.get(joint_name, 0.0)
+
+        # Use inverse dynamics
+        torques_array = self.inv_dyn.inverse_dynamics(
+            joint_positions,
+            joint_velocities,
+            desired_accels
+        )
+
+        # Convert to dictionary
+        torques = {}
+        for i, joint_name in enumerate(joint_names):
+            torques[joint_name] = torques_array[i]
 
         return torques
 

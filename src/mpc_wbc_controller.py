@@ -20,6 +20,8 @@ from wbc_tasks import (
     create_body_position_task,
     create_com_tracking_task
 )
+from stability_metrics import compute_com, compute_com_velocity
+from inverse_dynamics import InverseDynamics
 
 
 class MPCWBCController:
@@ -53,6 +55,9 @@ class MPCWBCController:
         # Create sub-controllers
         self.mpc = LinearInvertedPendulumMPC(mpc_params)
         self.wbc = WholeBodyController(robot_id, joint_dict, wbc_params)
+
+        # Inverse dynamics (Phase 2.2)
+        self.inv_dyn = InverseDynamics(robot_id)
 
         # Task hierarchy
         self.task_hierarchy = TaskHierarchy()
@@ -157,15 +162,18 @@ class MPCWBCController:
         """
         Get CoM position and velocity
 
+        Uses accurate computation from Phase 1 that considers all links.
+
         Returns:
             state: [x, y, z, dx, dy, dz]
         """
-        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
-        base_vel, _ = p.getBaseVelocity(self.robot_id)
+        # Use accurate CoM from stability_metrics (Phase 1.1)
+        com_pos = compute_com(self.robot_id)
+        com_vel = compute_com_velocity(self.robot_id)
 
         return np.array([
-            base_pos[0], base_pos[1], base_pos[2],
-            base_vel[0], base_vel[1], base_vel[2]
+            com_pos[0], com_pos[1], com_pos[2],
+            com_vel[0], com_vel[1], com_vel[2]
         ])
 
     def _get_base_orientation(self) -> np.ndarray:
