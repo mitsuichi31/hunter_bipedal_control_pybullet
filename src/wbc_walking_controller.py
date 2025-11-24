@@ -27,7 +27,81 @@ from wbc_tasks import (
 )
 from contact_state_machine import ContactStateMachine, ContactStateParams, ContactPhase
 from inverse_dynamics import InverseDynamics
-from stability_metrics import compute_com
+from stability_metrics import compute_com, compute_zmp
+
+
+class ContactTransitionManager:
+    """
+    Manages smooth transitions during heel strike and toe off
+
+    Gradually changes contact weights to avoid sudden force changes
+    that could destabilize the robot.
+    """
+
+    def __init__(self, transition_duration: float = 0.05):
+        """
+        Initialize transition manager
+
+        Args:
+            transition_duration: Duration of transition (seconds), default 50ms
+        """
+        self.transition_duration = transition_duration
+        self.in_transition = False
+        self.transition_time = 0.0
+        self.transition_type = None  # 'heel_strike' or 'toe_off'
+        self.transition_foot = None  # 'left' or 'right'
+
+    def start_transition(self, transition_type: str, foot_name: str):
+        """
+        Start a contact transition
+
+        Args:
+            transition_type: 'heel_strike' or 'toe_off'
+            foot_name: 'left' or 'right'
+        """
+        self.in_transition = True
+        self.transition_time = 0.0
+        self.transition_type = transition_type
+        self.transition_foot = foot_name
+
+    def update(self, dt: float) -> float:
+        """
+        Update transition and get current weight
+
+        Args:
+            dt: Time step
+
+        Returns:
+            Contact weight (0 to 1)
+        """
+        if not self.in_transition:
+            return 1.0
+
+        self.transition_time += dt
+
+        # Compute transition progress (0 to 1)
+        progress = min(1.0, self.transition_time / self.transition_duration)
+
+        # Compute weight based on transition type
+        if self.transition_type == 'heel_strike':
+            # Gradually increase weight from 0 to 1
+            weight = progress
+        elif self.transition_type == 'toe_off':
+            # Gradually decrease weight from 1 to 0
+            weight = 1.0 - progress
+        else:
+            weight = 1.0
+
+        # Check if transition complete
+        if progress >= 1.0:
+            self.in_transition = False
+            weight = 1.0 if self.transition_type == 'heel_strike' else 0.0
+
+        return weight
+
+    def is_transitioning(self) -> bool:
+        """Check if currently in transition"""
+        return self.in_transition
 
 
 @dataclass
@@ -56,9 +130,16 @@ class WBCWalkingParams:
     max_roll_pitch: float = 0.26     # Maximum body tilt (rad, ~15 degrees)
     min_com_height: float = 0.40     # Minimum acceptable CoM height (m)
     max_com_height: float = 0.70     # Maximum acceptable CoM height (m)
+    max_zmp_offset: float = 0.08     # Maximum ZMP distance from support polygon center (m)
+
+    # Contact transitions
+    transition_duration: float = 0.05  # Smooth transition duration (seconds, 50ms)
 
     # Control frequency
     control_dt: float = 0.01         # Control update rate (seconds, 100Hz)
+
+    # Emergency stop
+    enable_emergency_stop: bool = True  # Enable automatic emergency stop on instability
 
 
 class WBCWalkingController:
@@ -113,10 +194,16 @@ class WBCWalkingController:
         self.inv_dyn = InverseDynamics(robot_id)
         self.task_hierarchy = TaskHierarchy()
 
+        # Contact transition manager
+        self.transition_manager = ContactTransitionManager(
+            transition_duration=self.walking_params.transition_duration
+        )
+
         # State
         self.time = 0.0
         self.last_control_update = 0.0
         self.is_active = False
+        self.previous_contact_state = (True, True)  # Track contact state for transition detection
 
         # Foot link indices
         self.left_foot_link, self.right_foot_link = self._find_foot_links()
@@ -270,9 +357,36 @@ class WBCWalkingController:
             )
             self.task_hierarchy.add_task(task)
 
+    def _get_support_polygon_center(self, left_contact: bool, right_contact: bool,
+                                     left_pos: np.ndarray, right_pos: np.ndarray) -> np.ndarray:
+        """
+        Get center of support polygon based on contact state
+
+        Args:
+            left_contact: Is left foot in contact
+            right_contact: Is right foot in contact
+            left_pos: Left foot position
+            right_pos: Right foot position
+
+        Returns:
+            Center of support polygon [x, y]
+        """
+        if left_contact and right_contact:
+            # Double support: center is midpoint between feet
+            return (left_pos[:2] + right_pos[:2]) / 2.0
+        elif left_contact:
+            # Left support only
+            return left_pos[:2]
+        elif right_contact:
+            # Right support only
+            return right_pos[:2]
+        else:
+            # No contact (flight phase) - should not happen in normal walking
+            return np.zeros(2)
+
     def check_stability(self, robot_state: Dict) -> Tuple[bool, str]:
         """
-        Check if robot is in a stable state
+        Enhanced stability checking with ZMP validation
 
         Args:
             robot_state: Current robot state
@@ -280,7 +394,7 @@ class WBCWalkingController:
         Returns:
             (is_stable, reason): Stability flag and reason if unstable
         """
-        # Check orientation
+        # Check 1: Body orientation
         base_orn = robot_state['base_orn']
         euler = p.getEulerFromQuaternion(base_orn)
         roll, pitch, yaw = euler
@@ -290,18 +404,86 @@ class WBCWalkingController:
         if abs(pitch) > self.walking_params.max_roll_pitch:
             return False, f"Pitch angle too large: {np.degrees(pitch):.1f}°"
 
-        # Check CoM height
+        # Check 2: CoM height
         com_height = robot_state['com_pos'][2]
         if com_height < self.walking_params.min_com_height:
             return False, f"CoM too low: {com_height:.3f}m"
         if com_height > self.walking_params.max_com_height:
             return False, f"CoM too high: {com_height:.3f}m"
 
+        # Check 3: ZMP inside support polygon
+        try:
+            zmp = compute_zmp(self.robot_id)
+            left_contact, right_contact = self.contact_fsm.get_contact_state()
+
+            support_center = self._get_support_polygon_center(
+                left_contact, right_contact,
+                robot_state['left_foot_pos'],
+                robot_state['right_foot_pos']
+            )
+
+            # Check distance from ZMP to support polygon center
+            zmp_offset = np.linalg.norm(zmp[:2] - support_center)
+
+            if zmp_offset > self.walking_params.max_zmp_offset:
+                return False, f"ZMP too far from support: {zmp_offset:.3f}m"
+
+        except Exception as e:
+            # If ZMP computation fails, skip this check
+            pass
+
+        # Check 4: Foot positions reasonable (not too far from base)
+        base_xy = robot_state['base_pos'][:2]
+        left_xy = robot_state['left_foot_pos'][:2]
+        right_xy = robot_state['right_foot_pos'][:2]
+
+        left_dist = np.linalg.norm(left_xy - base_xy)
+        right_dist = np.linalg.norm(right_xy - base_xy)
+
+        max_foot_dist = 0.5  # Maximum reasonable foot distance (m)
+        if left_dist > max_foot_dist:
+            return False, f"Left foot too far from base: {left_dist:.3f}m"
+        if right_dist > max_foot_dist:
+            return False, f"Right foot too far from base: {right_dist:.3f}m"
+
         return True, "Stable"
+
+    def _detect_and_handle_transitions(self, current_contact: Tuple[bool, bool]):
+        """
+        Detect contact state changes and initiate smooth transitions
+
+        Args:
+            current_contact: Current contact state (left, right)
+        """
+        left_prev, right_prev = self.previous_contact_state
+        left_curr, right_curr = current_contact
+
+        # Detect left foot transitions
+        if left_curr and not left_prev:
+            # Heel strike (left foot lands)
+            self.transition_manager.start_transition('heel_strike', 'left')
+            print(f"t={self.time:.2f}s: Left heel strike")
+        elif not left_curr and left_prev:
+            # Toe off (left foot lifts)
+            self.transition_manager.start_transition('toe_off', 'left')
+            print(f"t={self.time:.2f}s: Left toe off")
+
+        # Detect right foot transitions
+        if right_curr and not right_prev:
+            # Heel strike (right foot lands)
+            self.transition_manager.start_transition('heel_strike', 'right')
+            print(f"t={self.time:.2f}s: Right heel strike")
+        elif not right_curr and right_prev:
+            # Toe off (right foot lifts)
+            self.transition_manager.start_transition('toe_off', 'right')
+            print(f"t={self.time:.2f}s: Right toe off")
+
+        # Update previous state
+        self.previous_contact_state = current_contact
 
     def update(self, dt: float) -> Dict[str, float]:
         """
-        Main control update loop
+        Main control update loop with smooth transitions and safety
 
         Args:
             dt: Time step (seconds)
@@ -321,6 +503,15 @@ class WBCWalkingController:
         # Update contact state machine
         phase = self.contact_fsm.update(dt)
 
+        # Get current contact state
+        current_contact = self.contact_fsm.get_contact_state()
+
+        # Detect and handle contact transitions
+        self._detect_and_handle_transitions(current_contact)
+
+        # Update transition manager
+        transition_weight = self.transition_manager.update(dt)
+
         # Get gait targets (foot positions)
         left_target, right_target = self.gait_generator.get_foot_trajectories(self.time)
 
@@ -332,13 +523,20 @@ class WBCWalkingController:
         # Get current robot state
         robot_state = self._get_robot_state()
 
-        # Safety check
+        # Enhanced safety check
         is_stable, reason = self.check_stability(robot_state)
-        if not is_stable and self.is_active:
-            print(f"WARNING: Instability detected - {reason}")
-            # Could implement emergency stop here
+        if not is_stable:
+            if self.is_active:
+                print(f"⚠ WARNING: Instability detected - {reason}")
+
+                # Emergency stop if enabled
+                if self.walking_params.enable_emergency_stop:
+                    print("🛑 EMERGENCY STOP: Halting walking controller")
+                    self.stop()
+                    return {name: 0.0 for name in self.joint_dict.keys()}
 
         # Build task hierarchy based on contact phase
+        # (Task weights will be modulated by transition_weight in future)
         self._build_task_hierarchy(robot_state, gait_targets)
 
         # Get desired accelerations from task hierarchy
@@ -347,8 +545,9 @@ class WBCWalkingController:
         # For now, use simplified approach: return zero torques
         # Full implementation would:
         # 1. Solve WBC QP to get desired accelerations
-        # 2. Use inverse dynamics to compute torques
-        # 3. Apply gravity compensation
+        # 2. Use inverse dynamics to compute torques: τ = M(q)q̈ + g(q)
+        # 3. Apply contact force optimization
+        # 4. Modulate contact task weights by transition_weight
 
         # Placeholder: return zero torques
         torques = {name: 0.0 for name in self.joint_dict.keys()}
@@ -360,9 +559,11 @@ class WBCWalkingController:
         self.time = 0.0
         self.last_control_update = 0.0
         self.is_active = False
+        self.previous_contact_state = (True, True)
         self.gait_generator.reset()
         self.contact_fsm.reset()
         self.task_hierarchy.clear_tasks()
+        # Note: transition_manager will auto-reset when not in transition
 
     def start(self):
         """Activate walking controller"""
@@ -383,6 +584,9 @@ class WBCWalkingController:
             'phase': self.contact_fsm.phase.name,
             'step_count': self.contact_fsm.step_count,
             'num_tasks': len(self.task_hierarchy.tasks),
+            'in_transition': self.transition_manager.is_transitioning(),
+            'transition_type': self.transition_manager.transition_type,
+            'transition_foot': self.transition_manager.transition_foot,
         }
 
 
