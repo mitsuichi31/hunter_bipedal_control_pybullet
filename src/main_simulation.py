@@ -752,7 +752,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
     print("\nStarting simulation...")
     print(f"Duration: {duration}s")
     print(f"Gait: {gait_params.step_length*100:.0f}cm steps @ {gait_params.step_period}s period")
-    print(f"Control: Inverse dynamics (τ = M(q)q̈ + g(q)) with PD tracking\n")
+    print(f"Control: Inverse dynamics + Active Balance (orientation feedback)\n")
 
     # Activate controller
     controller.start()

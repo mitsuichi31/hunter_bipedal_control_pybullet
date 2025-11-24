@@ -488,24 +488,58 @@ class WBCWalkingController:
         joint_positions = np.array(joint_positions)
         joint_velocities = np.array(joint_velocities)
 
-        # Target configuration: straight legs with slight outward stance
+        # Get body orientation for active balance control
+        base_orn = robot_state['base_orn']
+        euler = p.getEulerFromQuaternion(base_orn)
+        roll, pitch, yaw = euler
+
+        # Active balance control: Adjust joints based on body orientation
+        # If robot leans forward (negative pitch), lean back at hips
+        # If robot leans backward (positive pitch), lean forward at hips
+        balance_gain_pitch = 0.5  # How aggressively to counter pitch (reduced)
+        balance_gain_roll = 0.2   # How aggressively to counter roll (reduced)
+
+        hip_pitch_adjustment = -balance_gain_pitch * pitch  # Counter-rotate pitch
+
+        # Also adjust based on angular velocity for damping
+        base_ang_vel = robot_state['base_ang_vel']
+        pitch_velocity = base_ang_vel[1]  # Pitch rate
+        roll_velocity = base_ang_vel[0]   # Roll rate
+
+        velocity_damping = 0.2
+        hip_pitch_velocity_comp = -velocity_damping * pitch_velocity
+
+        total_hip_pitch = hip_pitch_adjustment + hip_pitch_velocity_comp
+
+        # Roll balance: Adjust hip roll (shift weight side-to-side)
+        # If leaning left (positive roll), shift weight right
+        hip_roll_adjustment_left = -0.1 - balance_gain_roll * roll
+        hip_roll_adjustment_right = 0.1 - balance_gain_roll * roll
+
+        # Ankle balance: Use ankle pitch to adjust ZMP position
+        # Forward lean (negative pitch) → ankle dorsiflexion (positive) to shift ZMP forward
+        # Backward lean (positive pitch) → ankle plantarflexion (negative) to shift ZMP back
+        ankle_balance_gain = 0.3
+        ankle_pitch_adjustment = ankle_balance_gain * pitch  # Same direction as lean
+
+        # Target configuration with active balance adjustments
         target_positions = np.array([
-            -0.1,  # leg_l1: hip roll outward
+            hip_roll_adjustment_left,  # leg_l1: hip roll with balance
             0.0,   # leg_l2: hip yaw
-            0.0,   # leg_l3: hip pitch straight
+            total_hip_pitch,  # leg_l3: hip pitch with balance control
             0.0,   # leg_l4: knee straight
-            0.0,   # leg_l5: ankle straight
-            0.1,   # leg_r1: hip roll outward
+            ankle_pitch_adjustment,   # leg_l5: ankle with ZMP adjustment
+            hip_roll_adjustment_right,  # leg_r1: hip roll with balance
             0.0,   # leg_r2: hip yaw
-            0.0,   # leg_r3: hip pitch straight
+            total_hip_pitch,  # leg_r3: hip pitch with balance control
             0.0,   # leg_r4: knee straight
-            0.0,   # leg_r5: ankle straight
+            ankle_pitch_adjustment,   # leg_r5: ankle with ZMP adjustment
         ])
 
         # PD control to compute desired accelerations
         # Higher gains for stronger control
-        kp = 500.0  # Position gain (increased from 200)
-        kd = 50.0   # Velocity gain (increased from 20)
+        kp = 500.0  # Position gain
+        kd = 50.0   # Velocity gain
 
         position_error = target_positions - joint_positions
         desired_accelerations = kp * position_error - kd * joint_velocities
