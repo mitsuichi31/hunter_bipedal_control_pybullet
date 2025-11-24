@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Hunter is a **bipedal robot simulation** project using PyBullet. The robot is a 10-DOF (degrees of freedom) bipedal robot with 5 joints per leg. The project implements multiple control strategies with varying levels of sophistication and completion.
 
-**Current Status (Phase 1 & 2 Complete):**
+**Current Status (Phase 1 & 2 Complete, Phase 3 Investigation Complete):**
 - ✅ **Standing mode**: Perfectly stable (Roll=0.2°, Pitch=0.1°) using PD control
 - ✅ **Standing-MPC mode**: Stable using Model Predictive Control + ZMP
 - ✅ **WBC mode**: Phase 2 complete - standing stability Roll=0.00°, Pitch=0.03°
-- 🚧 **Walking mode**: Phase 3 pending - requires WBC-based architecture redesign
+- 🔍 **Walking mode**: Phase 3 investigation complete - WBC-hybrid control incompatibility identified, architectural redesign plan created (see WBC_ARCHITECTURAL_REDESIGN.md)
 
 ## Critical Knowledge
 

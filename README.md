@@ -9,7 +9,7 @@ PyBulletを使用したHunter 2足歩行ロボットのシミュレーション�
 | **standing** | ✅ **完全動作** | PD制御による立位保持（Roll=0.2°） |
 | **standing-mpc** | ✅ **完全動作** | MPC+ZMP制御による立位保持（Roll=0.2°） |
 | **wbc** | ✅ **Phase 2完了** | WBC立位制御（Roll=0.00°, Pitch=0.03°） |
-| **walking** | 🚧 **Phase 3進行中** | WBC歩行アーキテクチャ実装中（M1-3完了、M4-5残） |
+| **walking** | 🔍 **Phase 3調査完了** | アーキテクチャ不整合特定済み、再設計計画作成済み |
 
 ## 特徴
 
@@ -45,35 +45,44 @@ PyBulletを使用したHunter 2足歩行ロボットのシミュレーション�
 
 詳細は [STABILITY_IMPROVEMENT_PLAN.md](STABILITY_IMPROVEMENT_PLAN.md) を参照してください。
 
-### Phase 3: WBC歩行モード（進行中 🚧）
+### Phase 3: WBC歩行モード（調査完了・再設計中 🔍）
 
-**2025年11月24日開始** - アーキテクチャ実装進行中
+**2025年11月24日** - WBC-ハイブリッド制御アーキテクチャ調査完了
 
-#### 完了したマイルストーン
-- ✅ **M1: 接触状態機械**: 接触フェーズ管理（DS/LS/RS）、接触検出、6/6テスト合格
-- ✅ **M2: WBCタスク**: 遊脚追跡タスク、支持脚制約、階層的タスク統合
-- ✅ **M3: 接触遷移**: スムーズ遷移（50ms）、安全チェック強化、緊急停止
-- ✅ **M4.1: 超保守的歩容**: 5cmステップ、2s周期、50%二重支持
-- ✅ **M5.1: 統合**: main_simulation.py統合、エンドツーエンド検証
+#### 完了した調査
+- ✅ **Test #8**: ハイブリッド制御実装（位置制御: 股・膝、トルク制御: 足首）
+  - 結果: わずかな改善（10s持続 vs 以前の5s）、根本的には不安定
+- ✅ **Test #9**: Option A - ゲイン調整とポスチャスケール除去
+  - MPCWBCControllerに合わせてゲイン調整（kp_orientation=100, kp_com=50）
+  - 結果: t=10sで失敗、posture_norm=87-109 Nm（限界の4-5倍）
+- ✅ **Test #10**: Option B - スタンス制約除去
+  - 明示的なスタンス足制約を削除、足アンカーのみに依存
+  - 結果: **Option Aと同一の失敗モード**
 
-#### 実装されたアーキテクチャ
-```
-歩容生成器 → 接触FSM → タスク階層 → WBC QP → 逆動力学 → トルク
-```
+#### 根本原因の特定
+**アーキテクチャの根本的な不整合**:
+1. **WBCの仮定**: 10自由度の完全制御（全関節にトルク適用）
+2. **ハイブリッド制御の現実**: 2自由度のみ制御（足首のみトルク制御）
+3. **結果**: 位置制御関節（股・膝）がWBC動力学と衝突
+   - ポスチャエラーが蓄積 → トルク爆発（87-109 Nm）
+   - 基部が不安定化 → t=10sで転倒
 
-#### 残作業（M4.2、M4.3、M5.2）
-- ⚠️ 実際のトルク計算（WBC QP + 逆動力学の完全統合）
-- ⚠️ 歩容パラメータチューニング（トルク実装後）
-- ⚠️ 包括的テストスイート
-- ⚠️ ドキュメント最終更新
+#### 次のステップ: アーキテクチャ再設計
+- 📋 **計画作成済**: `WBC_ARCHITECTURAL_REDESIGN.md`
+- 🎯 **推奨アプローチ**: 統合制御アーキテクチャ（Approach B）
+  - 動作実績のあるMPCWBCControllerのパターンを統合
+  - タスク階層を簡素化（4タスク → 2タスク）
+  - 動力学計算を整合
+  - 成功確率: 85%, 予想期間: 5-7日間
+- 🔄 **代替アプローチ**: 3つの代替案を評価済み（Approach A, C, D）
 
 #### 新規ファイル
 - `src/contact_state_machine.py` - 接触フェーズ管理
-- `src/test_contact_state_machine.py` - 接触FSMテスト（6/6合格）
-- `src/wbc_walking_controller.py` - WBC歩行制御器（再設計）
-- `PHASE3_WALKING_PLAN.md` - Phase 3詳細計画
+- `src/wbc_walking_controller.py` - WBC歩行制御器（再設計待ち）
+- `WBC_DIAG_NOTES.md` - Test #1-10の完全な診断履歴
+- `WBC_ARCHITECTURAL_REDESIGN.md` - 詳細な再設計計画
 
-詳細は [PHASE3_WALKING_PLAN.md](PHASE3_WALKING_PLAN.md) を参照してください。
+詳細は [WBC_ARCHITECTURAL_REDESIGN.md](WBC_ARCHITECTURAL_REDESIGN.md) と [WBC_DIAG_NOTES.md](WBC_DIAG_NOTES.md) を参照してください。
 
 ## 貢献者向けガイド
 
@@ -126,16 +135,16 @@ hunter/
 │   └── test_all_modes.sh         # 全モードテストスクリプト
 ├── logs/                         # ログファイル保存先
 ├── requirements.txt              # 依存パッケージ
-├── CLAUDE.md                     # Claude Code開発ガイド
-├── STABILITY_IMPROVEMENT_PLAN.md # Phase 1-4開発計画（Phase 2完了）
-├── PHASE3_WALKING_PLAN.md        # Phase 3詳細実装計画
-├── CONTROL_SYSTEM_OVERVIEW.md    # 制御システムアーキテクチャ概要
-├── STABILITY_FIX.md              # 立位安定化の技術詳細
-├── MPC_WALKING_FIX.md            # MPC/歩行調査レポート
-├── WALKING_MODE_INVESTIGATION.md # 歩行モード詳細調査
-├── ARCHITECTURE_CHANGES_SUMMARY.md # アーキテクチャ変更の試み
-├── SESSION_SUMMARY_2025-11-23.md # 開発セッション概要（Nov 23）
-└── README.md                     # このファイル
+├── CLAUDE.md                       # Claude Code開発ガイド
+├── STABILITY_IMPROVEMENT_PLAN.md   # Phase 1-4開発計画（Phase 2完了）
+├── WBC_DIAG_NOTES.md               # WBC診断履歴（Test #1-10）
+├── WBC_ARCHITECTURAL_REDESIGN.md   # Phase 3アーキテクチャ再設計計画
+├── CONTROL_SYSTEM_OVERVIEW.md      # 制御システムアーキテクチャ概要
+├── STABILITY_FIX.md                # 立位安定化の技術詳細
+├── MPC_WALKING_FIX.md              # MPC/歩行調査レポート
+├── WALKING_MODE_INVESTIGATION.md   # 歩行モード詳細調査
+├── ARCHITECTURE_CHANGES_SUMMARY.md # アーキテクチャ変更履歴
+└── README.md                       # このファイル
 ```
 
 ## セットアップ

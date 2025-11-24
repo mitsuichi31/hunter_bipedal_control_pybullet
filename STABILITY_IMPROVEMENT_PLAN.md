@@ -1,19 +1,19 @@
 # Hunter Bipedal Robot - Stability Improvement Plan
 
 **Date**: November 23-24, 2025
-**Status**: Phase 2 Complete - Ready for Phase 3
+**Status**: Phase 2 Complete - Phase 3 Investigation Complete
 **Goal**: Enhance stability control and enable robust walking
 
 ---
 
 ## Executive Summary
 
-The Hunter bipedal robot currently achieves **excellent standing stability** (Roll=0.2°, Pitch=0.1°) using passive straight-leg configuration with minimal active control. However, **advanced control modes (WBC, Walking) require architectural improvements** to achieve their full potential.
+The Hunter bipedal robot currently achieves **excellent standing stability** (Roll=0.2°, Pitch=0.1°) using passive straight-leg configuration with minimal active control. Phase 1 & 2 successfully improved core stability fundamentals and WBC control. **Phase 3 investigation identified fundamental architectural incompatibility** between WBC framework and hybrid control mode.
 
 This document outlines a **phased development plan** to:
 1. ✅ **COMPLETE** - Improve core stability fundamentals (CoM, ZMP, gravity compensation)
 2. ✅ **COMPLETE** - Tune and validate WBC control for dynamic stability
-3. 🚶 **IN PROGRESS** - Enable robust bipedal walking with contact-aware control
+3. 🔍 **INVESTIGATION COMPLETE** - Identified WBC-hybrid control incompatibility, architectural redesign required
 4. 📊 **PENDING** - Add comprehensive stability monitoring and diagnostics
 
 ### Phase 1 & 2 Results Summary
@@ -58,7 +58,8 @@ This document outlines a **phased development plan** to:
 
 | Component | Status | Issues |
 |-----------|--------|--------|
-| **Walking Mode** | 🚧 Pending | IK incompatible with free-floating base (Phase 3) |
+| **Walking Mode** | 🔍 **Investigation Complete** | WBC-hybrid control architectural incompatibility identified (see Phase 3) |
+| **WBC Architectural Redesign** | 🚧 **Planned** | Detailed redesign plan in WBC_ARCHITECTURAL_REDESIGN.md |
 | **Momentum Control** | 🚧 Pending | Centroidal momentum tracking not implemented |
 | **Disturbance Rejection** | 🚧 Pending | Robustness tests not yet completed |
 | **Auto-Tuning** | 🚧 Pending | Manual tuning used, automation not implemented |
@@ -345,10 +346,58 @@ assert is_inside_support_polygon(zmp, foot_positions)
 
 ---
 
-### Phase 3: Walking Mode Redesign (Week 5-7)
+### Phase 3: Walking Mode Redesign 🔍 INVESTIGATION COMPLETE
+**Date**: November 24, 2025
+**Status**: Architectural incompatibility identified - Redesign required
 **Goal**: Enable robust bipedal walking
 
-#### 3.1 WBC-Based Walking Architecture
+#### Phase 3.1: Investigation Complete ✅
+
+**Tests Completed:**
+- ✅ **Test #8**: Hybrid control implementation (position: hips/knees, torque: ankles)
+  - Result: Marginal improvement (10s vs 5s), fundamentally unstable
+- ✅ **Test #9**: Option A - Gain matching + posture scaling removal
+  - Matched gains to MPCWBCController (kp_orientation=100, kp_com=50)
+  - Result: Failed at t=10s, posture_norm=87-109 Nm (4-5x limit)
+- ✅ **Test #10**: Option B - Stance constraint removal
+  - Removed explicit stance foot constraints
+  - Result: **IDENTICAL failure to Option A**
+
+**Root Cause Identified:**
+```
+WBC Assumption:     10-DOF fully actuated (all joints apply torques)
+Hybrid Reality:     2-DOF actuated (ankle joints only)
+Conflict:           Position-controlled joints fight WBC dynamics
+Result:             Posture error accumulation → torque explosion → failure at t=10s
+```
+
+**Architectural Incompatibility:**
+1. WBC computes dynamics for 10-DOF system (M(q)q̈ + g(q))
+2. Hybrid control only applies torques to 2 ankles
+3. 8 hip/knee joints use position control (fixed angles)
+4. Position control conflicts with WBC force requirements
+5. System becomes underactuated and uncontrollable
+
+**Next Steps:**
+- 📋 **Redesign Plan Created**: `WBC_ARCHITECTURAL_REDESIGN.md`
+- 🎯 **Recommended Approach**: Unified Control Architecture (Approach B)
+  - Align WBCWalkingController with proven MPCWBCController patterns
+  - Simplify task hierarchy (4 tasks → 2 tasks)
+  - Match dynamics computation exactly
+  - Success probability: 85%, Timeline: 5-7 days
+- 🔄 **Alternative Approaches**: 3 alternatives evaluated (A, C, D)
+
+**Documentation:**
+- `WBC_DIAG_NOTES.md` - Complete diagnostic history (Test #1-10)
+- `WBC_ARCHITECTURAL_REDESIGN.md` - Detailed redesign plan
+
+---
+
+#### Phase 3.2: Original Walking Plan (Superseded by Investigation)
+
+**Note**: The following plan was superseded by the architectural investigation above. The WBC-hybrid control incompatibility must be resolved before proceeding with walking implementation.
+
+#### 3.1 WBC-Based Walking Architecture (ORIGINAL PLAN)
 **Priority**: 🔴 Critical
 **Effort**: 6-8 days
 **File**: `src/wbc_walking_controller.py` (redesign)

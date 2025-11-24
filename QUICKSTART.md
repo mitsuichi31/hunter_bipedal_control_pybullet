@@ -9,9 +9,10 @@ Hunter二足歩行ロボットシミュレーションを最速で始めるた�
 | `standing` | ✅ 完璧 | ⭐⭐⭐⭐⭐ |
 | `standing-mpc` | ✅ 完璧 | ⭐⭐⭐⭐⭐ |
 | `wbc` | ✅ Phase 2完了 | ⭐⭐⭐⭐ |
-| `walking` | ⚠️ Phase 3予定 | ⭐⭐ |
+| `walking` | 🔍 Phase 3調査完了・再設計中 | ⭐⭐ |
 
 **推奨**: `standing`, `standing-mpc`, `wbc` モードが動作します！
+**Phase 3**: WBC-ハイブリッド制御の調査完了。アーキテクチャ再設計計画作成済み。
 
 ## 5分で始める
 
