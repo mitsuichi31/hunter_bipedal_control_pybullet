@@ -796,8 +796,13 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     print("WALKING SIMULATION - Posture Control Baseline")
     print("="*70)
     use_wbc = os.environ.get("WALKING_WBC", "0") != "0"
-    use_hybrid = os.environ.get("WBC_HYBRID_CONTROL", "0") != "0"
+    standing_mode_default = "1" if use_wbc else "0"
+    standing_mode = os.environ.get("WBC_WALKING_STANDING", standing_mode_default) != "0"
+    hybrid_env = os.environ.get("WBC_HYBRID_CONTROL")
+    use_hybrid = (hybrid_env != "0") if hybrid_env is not None else standing_mode
     print(f"Control: POSITION_CONTROL standing posture{' + WBC stepping' if use_wbc else ''}")
+    if standing_mode and use_wbc:
+        print("WBC Walking Standing Mode: ENABLED (double support, no gait)")
     if use_hybrid and use_wbc:
         print("WBC Mode: HYBRID (position on hips/knees, torque on ankles)")
     print()
@@ -886,7 +891,8 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
         )
 
         # Enable foot anchoring if environment variables are set
-        anchor_weight = float(os.environ.get("WBC_ANCHOR_WEIGHT", "0.0"))
+        anchor_weight_default = "10.0" if standing_mode else "0.0"
+        anchor_weight = float(os.environ.get("WBC_ANCHOR_WEIGHT", anchor_weight_default))
         anchor_kp = float(os.environ.get("WBC_ANCHOR_KP", "300.0"))
         anchor_kd = float(os.environ.get("WBC_ANCHOR_KD", "100.0"))
 
@@ -904,6 +910,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
         print(f"[WBC] Foot anchoring: w={anchor_weight}, kp={anchor_kp}, kd={anchor_kd}")
 
         walking_params = WBCWalkingParams(
+            standing_mode=standing_mode,
             use_hybrid_control=use_hybrid,
             kp_orientation=60.0,
             kd_orientation=8.0,
@@ -911,9 +918,14 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
             kd_com=4.0,
             kp_swing=80.0,
             kd_swing=8.0,
-            kd_stance=20.0,
+            kd_stance=60.0 if standing_mode else 20.0,
+            posture_kp=8.0 if standing_mode else 15.0,
+            posture_kd=0.8 if standing_mode else 1.5,
+            diag_posture_scale=0.1 if standing_mode else 0.25,
+            joint_damping_gain=0.1 if standing_mode else 0.3,
             transition_duration=0.05,
             enable_emergency_stop=not disable_estop,
+            diag_freeze_contacts=standing_mode,
         )
         controller = WBCWalkingController(
             robot_id=sim.robot_id,
@@ -922,7 +934,6 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
             wbc_params=wbc_params,
             walking_params=walking_params
         )
-        controller.walking_params.diag_freeze_contacts = True  # force double support during diagnostics
         controller.start()
 
     while sim.time < duration:

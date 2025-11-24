@@ -49,6 +49,13 @@ class InverseDynamics:
 
         self._cache_joint_info()
 
+        # Cached gravity compensation helper (avoid re-instantiating every call)
+        try:
+            from gravity_compensation import GravityCompensation
+            self._gravity_comp = GravityCompensation(self.robot_id)
+        except ImportError:
+            self._gravity_comp = None
+
     def _cache_joint_info(self):
         """Cache joint information for efficiency"""
         if self._joint_info_cached:
@@ -242,13 +249,11 @@ class InverseDynamics:
             gravity_torques: Gravity torques for actuated joints (N·m)
         """
         # Use gravity_compensation module (handles free-floating base properly)
-        try:
-            from gravity_compensation import GravityCompensation
-            gc = GravityCompensation(self.robot_id)
-            return gc.compute_gravity_torques(joint_positions)
-        except ImportError:
-            # Fallback if gravity_compensation not available
-            return np.zeros(len(self._actuated_joints))
+        if self._gravity_comp is not None:
+            return self._gravity_comp.compute_gravity_torques(joint_positions)
+
+        # Fallback if gravity_compensation not available
+        return np.zeros(len(self._actuated_joints))
 
     def compute_coriolis_forces(self,
                                joint_positions: Optional[np.ndarray] = None,

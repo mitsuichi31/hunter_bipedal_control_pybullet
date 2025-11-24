@@ -107,16 +107,19 @@ class ContactTransitionManager:
 @dataclass
 class WBCWalkingParams:
     """Parameters for WBC walking controller"""
+    # Standing-only mode (freeze contacts/gait; hybrid by default)
+    standing_mode: bool = False      # When True, force double support and bypass gait logic
+
     # Hybrid control mode (position on hips/knees, torque on ankles)
     use_hybrid_control: bool = False  # Enable hybrid control for stability
 
-    # Control gains - Body orientation
-    kp_orientation: float = 60.0    # Body orientation tracking gain (reduced)
-    kd_orientation: float = 8.0     # Body orientation damping
+    # Control gains - Body orientation (matched to MPCWBCController)
+    kp_orientation: float = 100.0   # Body orientation tracking gain (was 60.0)
+    kd_orientation: float = 3.0     # Body orientation damping (was 8.0)
 
-    # Control gains - CoM tracking
-    kp_com: float = 20.0            # CoM position tracking gain
-    kd_com: float = 4.0             # CoM velocity damping
+    # Control gains - CoM tracking (matched to MPCWBCController)
+    kp_com: float = 50.0            # CoM position tracking gain (was 20.0)
+    kd_com: float = 5.0             # CoM velocity damping (was 4.0)
     height_kp: float = 60.0         # Vertical height regulation gain
     height_kd: float = 6.0          # Vertical velocity damping
 
@@ -220,6 +223,7 @@ class WBCWalkingController:
         self._diag_steps_logged = 0  # Limit verbose diagnostic prints
         self._posture_targets = None  # Standing posture reference (actuated order)
         self._jacobian_fail_logged = False  # Avoid flooding logs
+        self._foot_reference_positions = None  # Anchor points for stance feet
 
         # Foot link indices
         self.left_foot_link, self.right_foot_link = self._find_foot_links()
@@ -234,6 +238,14 @@ class WBCWalkingController:
         else:
             self.torque_controlled_joints = list(self.joint_dict.keys())  # All joints
             self.position_controlled_joints = []
+
+        # Standing-only path: freeze contacts/gait for stability work
+        if self.walking_params.standing_mode:
+            self.walking_params.diag_freeze_contacts = True
+            if not self.walking_params.use_hybrid_control:
+                # Hybrid split is strongly recommended when standing mode is on
+                self.walking_params.use_hybrid_control = True
+            print("  Standing mode enabled: contacts frozen (double support), gait disabled")
 
         print(f"WBC Walking Controller initialized")
         print(f"  Step period: {self.gait_params.step_period:.2f}s")
@@ -285,6 +297,14 @@ class WBCWalkingController:
 
         return position, velocity
 
+    def _ensure_foot_references(self, robot_state: Dict) -> None:
+        """Capture stance foot anchor positions once for anchoring/stability tasks"""
+        if self._foot_reference_positions is None:
+            self._foot_reference_positions = [
+                robot_state['left_foot_pos'].copy(),
+                robot_state['right_foot_pos'].copy()
+            ]
+
     def _get_robot_state(self) -> Dict:
         """Get current robot state"""
         # Base state
@@ -310,36 +330,39 @@ class WBCWalkingController:
             'right_foot_vel': right_vel,
         }
 
-    def _build_task_hierarchy(self, robot_state: Dict, gait_targets: Dict) -> None:
+    def _build_task_hierarchy(self, robot_state: Dict, gait_targets: Dict,
+                              current_contact: Tuple[bool, bool]) -> None:
         """
         Build task hierarchy based on current contact phase
 
         Args:
             robot_state: Current robot state
             gait_targets: Target positions from gait generator
+            current_contact: (left, right) contact flags to build constraints
         """
         self.task_hierarchy.clear_tasks()
 
-        # Get current contact phase
-        phase = self.contact_fsm.phase
-        left_contact, right_contact = self.contact_fsm.get_contact_state()
+        left_contact, right_contact = current_contact
 
         # Priority 0: Stance foot constraints (highest priority)
-        if left_contact:
-            task = create_stance_foot_constraint(
-                foot_name="left",
-                foot_velocity=robot_state['left_foot_vel'],
-                kd=self.walking_params.kd_stance
-            )
-            self.task_hierarchy.add_task(task)
-
-        if right_contact:
-            task = create_stance_foot_constraint(
-                foot_name="right",
-                foot_velocity=robot_state['right_foot_vel'],
-                kd=self.walking_params.kd_stance
-            )
-            self.task_hierarchy.add_task(task)
+        # OPTION B FIX: Commented out explicit stance foot constraints to avoid overconstraining QP
+        # The WBC QP foot anchoring (w=10, kp=300, kd=100) handles stance stability instead
+        # This matches the working MPCWBCController architecture
+        # if left_contact:
+        #     task = create_stance_foot_constraint(
+        #         foot_name="left",
+        #         foot_velocity=robot_state['left_foot_vel'],
+        #         kd=self.walking_params.kd_stance
+        #     )
+        #     self.task_hierarchy.add_task(task)
+        #
+        # if right_contact:
+        #     task = create_stance_foot_constraint(
+        #         foot_name="right",
+        #         foot_velocity=robot_state['right_foot_vel'],
+        #         kd=self.walking_params.kd_stance
+        #     )
+        #     self.task_hierarchy.add_task(task)
 
         # Priority 1: Body orientation (keep upright)
         desired_orientation = np.array([0, 0, 0, 1])  # Upright (quaternion)
@@ -415,12 +438,14 @@ class WBCWalkingController:
             # No contact (flight phase) - should not happen in normal walking
             return np.zeros(2)
 
-    def check_stability(self, robot_state: Dict) -> Tuple[bool, str]:
+    def check_stability(self, robot_state: Dict,
+                        current_contact: Optional[Tuple[bool, bool]] = None) -> Tuple[bool, str]:
         """
         Enhanced stability checking with ZMP validation
 
         Args:
             robot_state: Current robot state
+            current_contact: Optional contact flags to avoid stale FSM state
 
         Returns:
             (is_stable, reason): Stability flag and reason if unstable
@@ -445,7 +470,10 @@ class WBCWalkingController:
         # Check 3: ZMP inside support polygon
         try:
             zmp = compute_zmp(self.robot_id)
-            left_contact, right_contact = self.contact_fsm.get_contact_state()
+            if current_contact is None:
+                left_contact, right_contact = self.contact_fsm.get_contact_state()
+            else:
+                left_contact, right_contact = current_contact
 
             support_center = self._get_support_polygon_center(
                 left_contact, right_contact,
@@ -591,12 +619,17 @@ class WBCWalkingController:
         left_contact, right_contact = current_contact
         foot_positions = [robot_state['left_foot_pos'], robot_state['right_foot_pos']]
         contacts = [left_contact, right_contact]
+        foot_reference_positions = self._foot_reference_positions
+        foot_velocities = [robot_state['left_foot_vel'], robot_state['right_foot_vel']] \
+            if foot_reference_positions is not None else None
 
         # Solve for ground forces via WBC QP
         ground_forces = self.wbc.compute_ground_reaction_forces(
             desired_base_accel=base_accel,
             foot_positions=foot_positions,
-            foot_contacts=contacts
+            foot_contacts=contacts,
+            foot_reference_positions=foot_reference_positions,
+            foot_velocities=foot_velocities
         )
 
         # Foot Jacobians (linear) for actuated joints
@@ -605,7 +638,10 @@ class WBCWalkingController:
         # Gravity compensation
         joint_positions, joint_velocities = self._get_actuated_joint_states()
         gravity_torques = self.inv_dyn.compute_gravity_torques(joint_positions)
-        if self.walking_params.diag_freeze_contacts:
+        # Remove posture scaling in standing mode (Option A fix)
+        if self.walking_params.standing_mode:
+            posture_scale = 1.0  # Full strength for standing stability
+        elif self.walking_params.diag_freeze_contacts:
             posture_scale = self.walking_params.diag_posture_scale
         else:
             posture_scale = 1.0
@@ -764,14 +800,28 @@ class WBCWalkingController:
 
         self.last_control_update = self.time
 
-        if self.walking_params.diag_freeze_contacts:
-            # Force double support and freeze foot targets
+        # Get current robot state
+        robot_state = self._get_robot_state()
+        self._ensure_foot_references(robot_state)
+
+        if self.walking_params.standing_mode:
+            # Standing-only path: keep feet anchored at initial positions
+            self.contact_fsm.phase = ContactPhase.DOUBLE_SUPPORT
             current_contact = (True, True)
-            left_target, right_target = self._get_foot_state(self.left_foot_link)[0], self._get_foot_state(self.right_foot_link)[0]
-            gait_targets = {'left_foot': left_target, 'right_foot': right_target}
+            gait_targets = {
+                'left_foot': self._foot_reference_positions[0],
+                'right_foot': self._foot_reference_positions[1]
+            }
+        elif self.walking_params.diag_freeze_contacts:
+            # Force double support and freeze foot targets around current pose
+            current_contact = (True, True)
+            gait_targets = {
+                'left_foot': robot_state['left_foot_pos'],
+                'right_foot': robot_state['right_foot_pos']
+            }
         else:
             # Update contact state machine
-            phase = self.contact_fsm.update(dt)
+            self.contact_fsm.update(dt)
 
             # Get current contact state
             current_contact = self.contact_fsm.get_contact_state()
@@ -780,7 +830,7 @@ class WBCWalkingController:
             self._detect_and_handle_transitions(current_contact)
 
             # Update transition manager
-            transition_weight = self.transition_manager.update(dt)
+            self.transition_manager.update(dt)
 
             # Get gait targets (foot positions)
             left_target, right_target = self.gait_generator.get_foot_trajectories(self.time)
@@ -790,11 +840,8 @@ class WBCWalkingController:
                 'right_foot': right_target
             }
 
-        # Get current robot state
-        robot_state = self._get_robot_state()
-
         # Enhanced safety check
-        is_stable, reason = self.check_stability(robot_state)
+        is_stable, reason = self.check_stability(robot_state, current_contact)
         if not is_stable and not self.walking_params.diag_freeze_contacts:
             if self.is_active:
                 print(f"⚠ WARNING: Instability detected - {reason}")
@@ -810,7 +857,7 @@ class WBCWalkingController:
 
         # Build task hierarchy based on contact phase
         # (Task weights will be modulated by transition_weight in future)
-        self._build_task_hierarchy(robot_state, gait_targets)
+        self._build_task_hierarchy(robot_state, gait_targets, current_contact)
 
         # Get desired accelerations from task hierarchy
         base_accel, joint_accel = self.task_hierarchy.get_desired_acceleration()
