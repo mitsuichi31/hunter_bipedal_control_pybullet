@@ -235,8 +235,57 @@ Scope: Walking-mode stability investigation with `WALKING_WBC=1`
 - ❌ Full torque control on all 10 joints (fails in ~2s)
 - ❌ Pure torque control without hybrid split
 
-## Next Steps (Walking Mode)
-1) **Apply enhanced contact solver + hybrid control to WALKING_WBC=1** - Use hybrid approach for walking
-2) **Implement contact state transitions** - Handle swing phase and contact switching smoothly
-3) **Add swing foot trajectory tracking** - WBC task for swing foot position/velocity control
-4) **Consider higher-level hybrid strategy** - Position control during transitions, torque during stable phases
+---
+
+### Test #7: Walking WBC with Enhanced Solver + Foot Anchoring ❌
+**Objective:** Test if walking mode (WALKING_WBC=1) benefits from enhanced contact solver and foot anchoring
+
+**Setup:**
+- Modified run_walking_simulation() to enable enhanced contact solver when WALKING_WBC=1
+- Added foot anchoring parameter support (w=10, kp=300, kd=100)
+- WBCWalkingController uses full torque control on all 10 joints
+- Enhanced solver: 200 iterations, 4 substeps, tight contact breaking
+
+**Results:**
+- ❌ **FAILED** - Robot fell at t=5.0s
+- Final state: h=0.275m, Roll=-0.8°, Pitch=-55.8° (tipped forward)
+- Identical failure with and without foot anchoring
+- Result identical to baseline WALKING_WBC=1 (no improvement)
+
+**Root Cause Analysis:**
+WBCWalkingController applies torque control to ALL 10 joints (like Test #6 full torque mode), which fails even with:
+- ✅ Enhanced contact solver (enabled)
+- ✅ Foot anchoring (w=10, kp=300, kd=100)
+- ❌ **Missing: Hybrid control** (position on hips/knees, torque on ankles)
+
+**Comparison:**
+| Configuration | Joints on Torque | Enhanced Solver | Foot Anchoring | Result |
+|--------------|------------------|-----------------|----------------|--------|
+| Standing MPC+WBC (hybrid) | 2 (ankles) | ✅ | ✅ | ✅ STABLE (30s) |
+| Standing MPC+WBC (full) | 10 (all) | ✅ | ✅ | ❌ FAIL (2s) |
+| Walking WBC | 10 (all) | ✅ | ✅ | ❌ FAIL (5s) |
+
+**Conclusion:** Walking WBC requires hybrid control implementation in WBCWalkingController. The enhanced contact solver and foot anchoring are necessary but insufficient without limiting torque control to ankles only.
+
+---
+
+## FINAL SUMMARY (2025-01-30)
+
+**✅ Successfully Stabilized:** WBC Standing (Hybrid Control)
+- Configuration: Position on hips/knees (8 DOF), torque on ankles (2 DOF)
+- Duration: 30+ seconds stable
+- Requirements: Enhanced contact solver + Cartesian foot stiffness
+
+**❌ Still Unstable:** WBC Walking & Full Torque Standing
+- Full torque control (all 10 joints) fails regardless of solver settings
+- Walking controller (WBCWalkingController) uses full torque mode
+- Requires hybrid control implementation
+
+## Next Steps (Walking Mode - Updated)
+1) **Implement hybrid control in WBCWalkingController** - Core architecture change needed
+   - Modify torque computation to support joint-specific control modes
+   - Position control: hips/knees (leg_l1-l4, leg_r1-r4)
+   - Torque control: ankles (leg_l5, leg_r5)
+2) **Test walking with hybrid WBC** - Validate stability with limited torque DOF
+3) **Implement contact state transitions** - Handle swing phase with hybrid strategy
+4) **Add swing foot trajectory** - Use position control during swing phase for robustness

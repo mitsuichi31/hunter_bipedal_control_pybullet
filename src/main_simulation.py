@@ -796,17 +796,30 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     print("WALKING SIMULATION - Posture Control Baseline")
     print("="*70)
     use_wbc = os.environ.get("WALKING_WBC", "0") != "0"
+    use_hybrid = os.environ.get("WBC_HYBRID_CONTROL", "0") != "0"
     print(f"Control: POSITION_CONTROL standing posture{' + WBC stepping' if use_wbc else ''}")
+    if use_hybrid and use_wbc:
+        print("WBC Mode: HYBRID (position on hips/knees, torque on ankles)")
     print()
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
-    # Create simulation
+    # Create simulation with enhanced contact solver if WBC is enabled
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
-    sim.connect()
+    enable_stable_contacts = use_wbc
+    sim.connect(enable_stable_contacts=enable_stable_contacts)
     sim.load_robot(start_position=[0, 0, 0.679])
+
+    # Apply enhanced contact properties for WBC
+    if enable_stable_contacts:
+        sim.set_contact_properties(
+            lateral_friction=1.2,
+            spinning_friction=0.2,
+            rolling_friction=0.05,
+            restitution=0.0
+        )
 
     # Set robot to standing configuration
     standing_config = {
@@ -871,14 +884,24 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
             stance_width=0.18,
             body_height=0.679,
         )
+
+        # Enable foot anchoring if environment variables are set
+        anchor_weight = float(os.environ.get("WBC_ANCHOR_WEIGHT", "0.0"))
+        anchor_kp = float(os.environ.get("WBC_ANCHOR_KP", "300.0"))
+        anchor_kd = float(os.environ.get("WBC_ANCHOR_KD", "100.0"))
+
         wbc_params = WBCParams(
             friction_coef=0.6,
             max_normal_force=500.0,
             min_normal_force=1.0,
             w_force_tracking=10.0,
             w_force_regularization=0.01,
-            w_torque_regularization=0.001
+            w_torque_regularization=0.001,
+            w_foot_anchor=anchor_weight,
+            foot_stiffness_kp=anchor_kp,
+            foot_damping_kd=anchor_kd
         )
+        print(f"[WBC] Foot anchoring: w={anchor_weight}, kp={anchor_kp}, kd={anchor_kd}")
         walking_params = WBCWalkingParams(
             kp_orientation=60.0,
             kd_orientation=8.0,
