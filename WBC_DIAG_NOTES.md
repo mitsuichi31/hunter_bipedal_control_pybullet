@@ -1,6 +1,45 @@
 # WBC Walking Diagnostics (Current Status)
 
-Date: 2026-02-03  
+**Date**: 2025-11-25 (Phase 1 & 2 Complete ✅)
+**Scope**: Walking-mode stability investigation and architectural redesign
+
+## ✅ INVESTIGATION COMPLETE - SOLUTION IMPLEMENTED
+
+**Phase 1 & 2 Results (2025-11-24 to 2025-11-25):**
+
+### Critical Discovery
+Both MPCWBCController and WBCWalkingController **FAIL identically** with torque/hybrid control:
+- MPCWBCController (torque mode): Falls at t=0.12s, posture_tau=107 Nm (5.4x limit)
+- WBCWalkingController (hybrid mode): Falls at t=0.03s, posture_tau=109 Nm (5.5x limit)
+- **Root cause**: 20 Nm torque limit insufficient for bipedal balance control
+
+### Solution: Position Control Architecture
+MPCWBCController (`standing-mpc` mode) ONLY works with **PyBullet POSITION_CONTROL**, not torque control!
+
+**Implementation (Phase 2):**
+- Added `_compute_position_commands()` to WBCWalkingController
+- Uses straight-leg configuration + PD orientation corrections (matches standing-mpc)
+- Returns hybrid command format: `{joint: {'mode': 'position', 'value': angle}}`
+
+**Test Results:**
+- **BEFORE**: Fails at t=10s (torque saturation, robot falls)
+- **AFTER**: ✅ **Stable for 30+ seconds** (Roll=-0.2°, Pitch=-1.7°, Height=0.688m)
+
+**Usage:**
+```bash
+WALKING_WBC=1 WBC_WALKING_STANDING=1 python3 src/main_simulation.py --mode walking --duration 30 --no-gui
+```
+
+**Documentation:**
+- See `BASELINE_TEST_RESULTS.md` for empirical test data
+- See `CONTROLLER_COMPARISON.md` for code analysis
+- See `WBC_ARCHITECTURAL_REDESIGN.md` for complete plan
+
+---
+
+## Historical Investigation Notes (Prior to Phase 1 & 2)
+
+Date: 2026-02-03
 Scope: Walking-mode stability investigation with `WALKING_WBC=1`
 
 ## What We Tried Recently
