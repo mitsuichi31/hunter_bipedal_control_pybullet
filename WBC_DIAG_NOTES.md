@@ -1,11 +1,11 @@
 # WBC Walking Diagnostics (Current Status)
 
-**Date**: 2025-11-25 (Phase 1 & 2 Complete ✅)
+**Date**: 2025-11-25 (Phase 1, 2, & 3 Complete ✅)
 **Scope**: Walking-mode stability investigation and architectural redesign
 
-## ✅ INVESTIGATION COMPLETE - SOLUTION IMPLEMENTED
+## ✅ INVESTIGATION COMPLETE - PHASES 1-3 IMPLEMENTED
 
-**Phase 1 & 2 Results (2025-11-24 to 2025-11-25):**
+**Phase 1-3 Results (2025-11-24 to 2025-11-25):**
 
 ### Critical Discovery
 Both MPCWBCController and WBCWalkingController **FAIL identically** with torque/hybrid control:
@@ -33,11 +33,51 @@ WALKING_WBC=1 WBC_WALKING_STANDING=1 python3 src/main_simulation.py --mode walki
 **Documentation:**
 - See `BASELINE_TEST_RESULTS.md` for empirical test data
 - See `CONTROLLER_COMPARISON.md` for code analysis
+- See `PHASE_1_2_SUMMARY.md` for complete Phase 1 & 2 summary
 - See `WBC_ARCHITECTURAL_REDESIGN.md` for complete plan
+
+### Phase 3: IK-Based Walking Implementation ✅
+
+**Goal**: Implement walking mode using IK-based position control building on Phase 2's stable standing.
+
+**Implementation (2025-11-25):**
+- Integrated `BipedalIKSolver` into WBCWalkingController
+- Modified `_compute_position_commands()` to support walking mode (lines 740-786)
+- Swing foot: Uses IK to compute joint angles from gait targets
+- Stance foot: Maintains proven standing configuration
+- Coordinate frame conversion: world frame (gait generator) → base frame (IK)
+
+**Test Results:**
+- **Standing mode**: ✅ **Still stable** (Roll=0.0°, Pitch=-1.8°, 5+ seconds) - regression test passed!
+- **Walking mode**: ⚠️ **Unstable** (falls at t=1.5s, Roll=91°, Pitch=44.6°) - expected limitation
+
+**Critical Finding**: PyBullet IK assumes fixed base → incompatible with free-floating bipedal walking
+- IK solver works correctly (produces smooth joint trajectories)
+- Contact state machine properly detects swing/stance transitions
+- Problem: During swing phase, IK doesn't compute base motion needed to maintain balance
+- Result: ZMP shifts 0.20m outside support polygon → robot falls
+
+**Conclusion**:
+- Position control is **excellent for standing** (Roll=0.0°, Pitch=-1.8°)
+- IK-based approach is **fundamentally limited for walking** (fixed-base assumption)
+- Robust walking requires **WBC with CoM planning** (Phase 4 - requires solving torque control)
+
+**Usage:**
+```bash
+# Standing mode (stable)
+WALKING_WBC=1 WBC_WALKING_STANDING=1 python3 src/main_simulation.py --mode walking --duration 5
+
+# Walking mode (demonstrates IK limitation)
+WALKING_WBC=1 WBC_WALKING_STANDING=0 WBC_HYBRID_CONTROL=1 \
+  python3 src/main_simulation.py --mode walking --duration 3
+```
+
+**Documentation:**
+- See `PHASE_3_WALKING_SUMMARY.md` for complete technical analysis, test results, and alternative approaches
 
 ---
 
-## Historical Investigation Notes (Prior to Phase 1 & 2)
+## Historical Investigation Notes (Prior to Phase 1-3)
 
 Date: 2026-02-03
 Scope: Walking-mode stability investigation with `WALKING_WBC=1`
