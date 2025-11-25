@@ -1,12 +1,56 @@
 # Hunter WBC-Hybrid Control Integration: Architectural Redesign Plan
 
-**Document Status**: Ready for Implementation
-**Date**: 2025-11-24
-**Version**: 1.0
+**Document Status**: Updated with Phase 1 Findings
+**Date**: 2025-11-24 (Updated: 2025-11-24)
+**Version**: 2.0
 
 ---
 
-## Executive Summary
+## 🚨 CRITICAL UPDATE: Phase 1 Investigation Complete
+
+**Phase 1 Testing (2025-11-24)** revealed a fundamental flaw in the original analysis:
+
+### Phase 1 Key Findings
+
+✅ **Both MPCWBCController and WBCWalkingController FAIL with torque/hybrid control**
+- MPCWBCController with torque control: Falls at t=0.12s, posture_tau=107 Nm (5.4x limit)
+- WBCWalkingController with hybrid control: Falls at t=0.03s, posture_tau=109 Nm (5.5x limit)
+- **Identical failure mode**: Posture torque explosion → saturation → robot falls
+
+✅ **Torque control is NOT viable for bipedal standing** (tested empirically)
+- Torque limit (20 Nm) insufficient for bipedal balance control
+- Posture PD gains (Kp=15.0) cause positive feedback when saturated
+- Free-floating base dynamics require stiff position control
+
+✅ **MPCWBCController ONLY works with POSITION_CONTROL** (not torque/hybrid)
+- `standing-mpc` mode uses PyBullet POSITION_CONTROL on ALL joints
+- Proven stable: 30+ seconds standing (Roll=0.2°, Pitch=0.1°)
+- WBC framework is NOT used for torque control in the working baseline
+
+### Revised Strategy
+
+**Original Plan (INCORRECT)**:
+- Match WBCWalkingController architecture to MPCWBCController's working torque/hybrid control
+- Problem: MPCWBCController doesn't actually work with torque/hybrid control!
+
+**Revised Plan (CORRECT)**:
+1. ✅ **Use POSITION_CONTROL** (proven stable in both controllers)
+2. ✅ **Simplify task hierarchy** (2 tasks vs 4 tasks) to match MPCWBCController
+3. ✅ **Remove torque/hybrid control** (empirically proven to fail)
+4. ✅ **Focus on gait planning + IK** for walking mode (not WBC torque control)
+
+**Success Probability (REVISED)**: 95% for standing mode with position control
+
+**See**:
+- `BASELINE_TEST_RESULTS.md` - Phase 1.2 empirical test data
+- `CONTROLLER_COMPARISON.md` - Phase 1.1 code analysis
+
+---
+
+## Executive Summary (Original - Superseded by Phase 1)
+
+<details>
+<summary>Click to expand original analysis (OUTDATED)</summary>
 
 After comprehensive code analysis, the fundamental architectural incompatibility between the WBC framework and hybrid control mode has been identified. **WBC computes dynamics for a 10-DOF system while hybrid control only actuates 2-DOF (ankles)**, creating an underactuated system where posture errors accumulate exponentially, leading to torque saturation and failure.
 
@@ -17,6 +61,10 @@ After comprehensive code analysis, the fundamental architectural incompatibility
 **Expected Timeline**: 5-7 days for Phase 1-2, with immediate validation possible
 
 **Success Probability**: 85% for standing mode, 50% for walking mode
+
+**UPDATE**: This analysis was based on incorrect assumption that MPCWBCController works with hybrid control. Phase 1 testing proves both controllers fail with torque/hybrid control.
+
+</details>
 
 ---
 

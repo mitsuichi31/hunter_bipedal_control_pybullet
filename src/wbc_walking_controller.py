@@ -693,6 +693,59 @@ class WBCWalkingController:
         else:
             return self._map_torques_to_dict(total_torques)
 
+    def _compute_position_commands(self, robot_state: Dict, gait_targets: Dict,
+                                   current_contact: Tuple[bool, bool]) -> Dict[str, Dict]:
+        """
+        Compute joint position commands using stable position control
+
+        Phase 2 Implementation: Matches working standing-mpc mode architecture.
+        Uses straight-leg configuration with minimal orientation corrections.
+
+        Note: WBC tasks are still built (for future walking mode) but we
+        directly return position commands instead of computing torques.
+
+        Args:
+            robot_state: Current robot state
+            gait_targets: Target foot positions
+            current_contact: Contact state
+
+        Returns:
+            joint_commands: Dictionary with {joint_name: {'mode': 'position', 'value': angle}}
+        """
+        # Get current base orientation for PD corrections
+        euler = p.getEulerFromQuaternion(robot_state['base_orn'])
+        roll = euler[0]
+        pitch = euler[1]
+
+        # Compute small corrective angles (matching MPCWBCController gains)
+        hip_pitch_correction = -pitch * 0.1   # Pitch compensation
+        ankle_pitch_correction = -pitch * 0.05
+        hip_roll_correction = -roll * 0.1     # Roll compensation
+
+        # Base configuration: straight legs (proven stable)
+        standing_positions = {
+            'leg_l1_joint': -0.1 + hip_roll_correction,
+            'leg_l2_joint': 0.0,
+            'leg_l3_joint': 0.0 + hip_pitch_correction,
+            'leg_l4_joint': 0.0,
+            'leg_l5_joint': 0.0 - hip_pitch_correction + ankle_pitch_correction,
+            'leg_r1_joint': 0.1 - hip_roll_correction,
+            'leg_r2_joint': 0.0,
+            'leg_r3_joint': 0.0 + hip_pitch_correction,
+            'leg_r4_joint': 0.0,
+            'leg_r5_joint': 0.0 - hip_pitch_correction + ankle_pitch_correction,
+        }
+
+        # Convert to hybrid command format for main_simulation.py
+        joint_commands = {}
+        for joint_name, position in standing_positions.items():
+            joint_commands[joint_name] = {
+                'mode': 'position',
+                'value': position
+            }
+
+        return joint_commands
+
     def _create_hybrid_commands(self, torques_array: np.ndarray) -> Dict[str, Dict]:
         """
         Create hybrid control commands (position + torque)
@@ -859,13 +912,18 @@ class WBCWalkingController:
         # (Task weights will be modulated by transition_weight in future)
         self._build_task_hierarchy(robot_state, gait_targets, current_contact)
 
-        # Get desired accelerations from task hierarchy
-        base_accel, joint_accel = self.task_hierarchy.get_desired_acceleration()
-
-        # Compute joint torques using simplified WBC approach
-        torques = self._compute_torques(robot_state, gait_targets, current_contact)
-
-        return torques
+        # Phase 2 Revision: Use position control (proven stable) instead of torque control
+        # Note: use_hybrid_control flag enables hybrid command format (position mode for all joints)
+        if self.walking_params.use_hybrid_control:
+            # Position control path (stable, matches working standing-mpc mode)
+            # Returns hybrid command format: {joint_name: {'mode': 'position', 'value': angle}}
+            joint_positions = self._compute_position_commands(robot_state, gait_targets, current_contact)
+            return joint_positions
+        else:
+            # Legacy pure torque control path (empirically unstable, see BASELINE_TEST_RESULTS.md)
+            # Note: This path is kept for backwards compatibility but should not be used
+            torques = self._compute_torques(robot_state, gait_targets, current_contact)
+            return torques
 
     def reset(self):
         """Reset controller state"""
