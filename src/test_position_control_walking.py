@@ -18,6 +18,7 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 import sys
+import os
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -231,7 +232,7 @@ def test_minimal_walking():
     """
     Test 2: Minimal Walking
 
-    Test very conservative walking (2cm steps, 2s period, 1cm height).
+    Test slightly assertive walking (default 4cm steps, 2s period, 1cm height).
     Success: 3-5 consecutive steps without falling
     """
     print("\n" + "=" * 60)
@@ -240,20 +241,8 @@ def test_minimal_walking():
 
     robot_id, joint_dict = setup_robot()
 
-    # Create controller with very conservative gait
-    gait_params = GaitParams(
-        step_length=0.02,  # 2cm steps
-        step_height=0.01,  # 1cm lift
-        step_period=2.0,   # 2 seconds per step
-        stance_width=0.18,
-        double_support_ratio=0.5  # 50% double support
-    )
-
-    params = WalkingControllerParams(
-        gait=gait_params,
-        standing_mode=False,  # Walking enabled
-        enable_walking=True
-    )
+    # Create controller with default gait (4cm step length)
+    params = WalkingControllerParams(standing_mode=False, enable_walking=True)
 
     controller = PositionControlWalkingController(robot_id, joint_dict, params)
     controller.reset()
@@ -268,10 +257,11 @@ def test_minimal_walking():
     # Data logging
     time_log = []
     state_log = []
+    com_est_log = []
 
     print(f"\nRunning {duration}s walking test...")
-    print(f"  Gait: {gait_params.step_length}m steps, {gait_params.step_period}s period")
-    print(f"  Expected: ~{duration / gait_params.step_period:.1f} steps")
+    print(f"  Gait: {params.gait.step_length}m steps, {params.gait.step_period}s period")
+    print(f"  Expected: ~{duration / params.gait.step_period:.1f} steps")
     print(f"  Simulation dt: {sim_dt*1000:.1f}ms (1000 Hz)")
     print(f"  Control dt: {control_dt*1000:.1f}ms (50 Hz)\n")
 
@@ -283,6 +273,8 @@ def test_minimal_walking():
         if step % control_decimation == 0:
             # Get position commands from controller
             position_commands = controller.update(control_dt)
+            com_est = controller.get_state_estimate()
+            com_est_log.append((t, com_est))
 
         if position_commands is None:
             print(f"\n✗ FAIL: Emergency stop at t={t:.2f}s")
@@ -292,7 +284,7 @@ def test_minimal_walking():
             print(f"  Final: Roll={state['roll']:+6.2f}°, Pitch={state['pitch']:+6.2f}°, Z={state['z']:.3f}m")
 
             # Compute steps completed
-            steps_completed = t / gait_params.step_period
+            steps_completed = t / params.gait.step_period
             print(f"  Steps completed: {steps_completed:.1f}")
 
             p.disconnect()
@@ -319,10 +311,13 @@ def test_minimal_walking():
     pitch_log = np.array([s['pitch'] for s in state_log])
     x_log = np.array([s['x'] for s in state_log])
     height_log = np.array([s['z'] for s in state_log])
+    com_pos_log = np.array([entry[1]['com_pos'] for entry in com_est_log])
+    com_vel_log = np.array([entry[1]['com_vel'] for entry in com_est_log])
 
     # Calculate steps completed
-    steps_completed = duration / gait_params.step_period
+    steps_completed = duration / params.gait.step_period
     forward_distance = x_log[-1] - x_log[0]
+    final_com = com_est_log[-1][1] if com_est_log else {"com_pos": np.zeros(3), "com_vel": np.zeros(3)}
 
     print(f"\nResults:")
     print(f"  Duration: {duration}s")
@@ -331,11 +326,19 @@ def test_minimal_walking():
     print(f"  Final Roll: {roll_log[-1]:+6.2f}°")
     print(f"  Final Pitch: {pitch_log[-1]:+6.2f}°")
     print(f"  Final Height: {height_log[-1]:.3f}m")
+    print(f"  Final CoM (filtered): {final_com['com_pos']}")
+    print(f"  Final CoM vel (filtered): {final_com['com_vel']}")
 
     # Success criteria: completed at least 3 steps without falling
     success = (steps_completed >= 3.0 and
                abs(roll_log[-1]) < 15.0 and
                abs(pitch_log[-1]) < 15.0)
+
+    # Basic estimator sanity checks (height and bounded velocity)
+    if com_pos_log.size > 0:
+        final_height = final_com["com_pos"][2]
+        final_speed = np.linalg.norm(final_com["com_vel"][:2])
+        success = success and 0.55 < final_height < 0.80 and final_speed < 1.0
 
     print(f"\n{'✓ PASS' if success else '✗ FAIL'}: Completed ≥3 steps, Roll < 15°, Pitch < 15°")
 
@@ -364,12 +367,72 @@ def test_minimal_walking():
     axes[2].legend()
     axes[2].grid(True)
 
+    # Overlay filtered CoM height for comparison if available
+    if com_pos_log.size > 0:
+        axes[2].plot(
+            np.array([entry[0] for entry in com_est_log]),
+            com_pos_log[:, 2],
+            label='Filtered CoM Z',
+            linewidth=2,
+            linestyle='--'
+        )
+
     plt.tight_layout()
     plt.savefig('/workspace/hunter/logs/position_control_walking_test.png', dpi=150)
     print(f"\nPlot saved to: logs/position_control_walking_test.png")
 
     p.disconnect()
     return success
+
+
+def run_gain_sweep():
+    """
+    Optional: sweep ZMP feedback gains to observe forward progress impact.
+    Controlled via ZMP_GAIN_SWEEP=1 to avoid slowing down default tests.
+    """
+    if os.environ.get("ZMP_GAIN_SWEEP") not in ("1", "true", "True"):
+        return
+
+    gains = [0.0, 0.1, 0.2, 0.3, 0.4]
+    results = []
+    print("\n" + "=" * 60)
+    print("ZMP Feedback Gain Sweep")
+    print("=" * 60)
+    for gain in gains:
+        robot_id, joint_dict = setup_robot()
+        params = WalkingControllerParams(
+            standing_mode=False,
+            enable_walking=True,
+            zmp_feedback_gain=gain
+        )
+        controller = PositionControlWalkingController(robot_id, joint_dict, params)
+        controller.reset()
+
+        sim_dt = 0.001
+        control_dt = 0.02
+        duration = 10.0
+        num_sim_steps = int(duration / sim_dt)
+        control_decimation = int(control_dt / sim_dt)
+
+        x_start = p.getBasePositionAndOrientation(robot_id)[0][0]
+        position_commands = None
+        for step in range(num_sim_steps):
+            if step % control_decimation == 0:
+                position_commands = controller.update(control_dt)
+            if position_commands is None:
+                break
+            apply_position_control(robot_id, joint_dict, position_commands)
+            p.stepSimulation()
+
+        x_end = p.getBasePositionAndOrientation(robot_id)[0][0]
+        forward_distance = x_end - x_start
+        state = get_robot_state(robot_id)
+        results.append((gain, forward_distance, state["roll"], state["pitch"]))
+        p.disconnect()
+
+    print("\nGain Sweep Results (10s, conservative gait):")
+    for gain, dist, roll, pitch in results:
+        print(f"  gain={gain:.2f}: forward={dist:.3f} m, roll={roll:+.2f}°, pitch={pitch:+.2f}°")
 
 
 if __name__ == "__main__":
@@ -383,6 +446,7 @@ if __name__ == "__main__":
     try:
         results.append(("Standing Mode", test_standing_mode()))
         results.append(("Minimal Walking", test_minimal_walking()))
+        run_gain_sweep()
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
         import traceback

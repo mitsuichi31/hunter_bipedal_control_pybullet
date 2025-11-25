@@ -42,14 +42,17 @@ class WalkingControllerParams:
     # Safety
     max_com_velocity: float = 0.5  # m/s
     emergency_stop_tilt: float = 0.35  # rad (~20 degrees)
+    estimator_cutoff_hz: float = 8.0  # low-pass cutoff for CoM estimation
+    zmp_feedback_gain: float = 0.1  # feedback gain on ZMP error (0 = open-loop)
+    zmp_correction_limit: float = 0.05  # max ZMP correction (meters)
 
     def __post_init__(self):
         """Initialize sub-parameters if not provided"""
         if self.gait is None:
             self.gait = GaitParams(
-                step_length=0.02,  # Very conservative: 2cm
-                step_height=0.01,  # Very conservative: 1cm
-                step_period=2.0,   # Very slow: 2 seconds per step
+                step_length=0.04,  # More assertive: 4cm
+                step_height=0.01,  # Moderate clearance: 1.0cm
+                step_period=2.0,   # Slower cadence: 2.0 seconds per step
                 stance_width=0.18,
                 double_support_ratio=0.5  # 50% double support
             )
@@ -99,6 +102,14 @@ class PositionControlWalkingController:
         self.last_ik_solution = None
         self.emergency_stop = False
 
+        # State estimation (CoM)
+        self.filtered_com_pos = np.zeros(3)
+        self.filtered_com_vel = np.zeros(3)
+        self.filtered_com_acc = np.zeros(3)
+        self._prev_com_measurement = None
+        self._prev_filtered_vel = None
+        self._prev_raw_vel = None
+
         # Foot link indices
         self.left_foot_link = joint_dict['leg_l5_joint']
         self.right_foot_link = joint_dict['leg_r5_joint']
@@ -116,6 +127,14 @@ class PositionControlWalkingController:
         # Reset CoM planner to current state
         com_pos = self._compute_com()
         self.com_planner.reset(com_pos[:2], np.zeros(2))
+
+        # Reset estimator
+        self.filtered_com_pos = com_pos
+        self.filtered_com_vel = np.zeros(3)
+        self.filtered_com_acc = np.zeros(3)
+        self._prev_com_measurement = com_pos
+        self._prev_filtered_vel = np.zeros(3)
+        self._prev_raw_vel = np.zeros(3)
 
         self.last_ik_solution = None
         self.emergency_stop = False
@@ -236,6 +255,63 @@ class PositionControlWalkingController:
 
         return True
 
+    def _update_state_estimate(self, dt: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Low-pass filter CoM position and velocity for feedback-ready estimates.
+
+        Args:
+            dt: Timestep (seconds)
+
+        Returns:
+            (filtered_position, filtered_velocity) as 3D vectors
+        """
+        measured_com = self._compute_com()
+
+        if self._prev_com_measurement is None or dt <= 0:
+            self.filtered_com_pos = measured_com
+            self.filtered_com_vel = np.zeros(3)
+            self.filtered_com_acc = np.zeros(3)
+            self._prev_com_measurement = measured_com
+            self._prev_filtered_vel = np.zeros(3)
+            self._prev_raw_vel = np.zeros(3)
+            return self.filtered_com_pos, self.filtered_com_vel
+
+        raw_vel = (measured_com - self._prev_com_measurement) / dt
+        raw_acc = (raw_vel - self._prev_raw_vel) / dt
+
+        # Exponential smoothing coefficient based on cutoff frequency
+        alpha = 1.0 - np.exp(-dt * 2 * np.pi * self.params.estimator_cutoff_hz)
+        alpha = np.clip(alpha, 0.0, 1.0)
+
+        self.filtered_com_pos = (1 - alpha) * self.filtered_com_pos + alpha * measured_com
+        self.filtered_com_vel = (1 - alpha) * self.filtered_com_vel + alpha * raw_vel
+        self.filtered_com_acc = (1 - alpha) * self.filtered_com_acc + alpha * raw_acc
+
+        self._prev_com_measurement = measured_com
+        self._prev_filtered_vel = self.filtered_com_vel.copy()
+        self._prev_raw_vel = raw_vel
+        return self.filtered_com_pos, self.filtered_com_vel
+
+    def _estimate_zmp_actual(self) -> np.ndarray:
+        """
+        Estimate actual ZMP from filtered CoM state using LIPM relation.
+
+        Returns:
+            Estimated ZMP [x, y]
+        """
+        omega2 = self.params.com_planning.omega ** 2
+        # p = x - ẍ / ω²
+        return self.filtered_com_pos[:2] - self.filtered_com_acc[:2] / omega2
+
+    def get_state_estimate(self) -> Dict[str, np.ndarray]:
+        """Expose latest filtered CoM estimate for diagnostics/tests."""
+        return {
+            "com_pos": self.filtered_com_pos.copy(),
+            "com_vel": self.filtered_com_vel.copy(),
+            "com_acc": self.filtered_com_acc.copy(),
+            "zmp_actual": self._estimate_zmp_actual(),
+        }
+
     def update(self, dt: float) -> Optional[Dict]:
         """
         Update walking controller
@@ -253,6 +329,9 @@ class PositionControlWalkingController:
 
         # Update time
         self.time += dt
+
+        # Update state estimate (CoM) for feedback/planner sync
+        com_pos_est, com_vel_est = self._update_state_estimate(dt)
 
         # Standing mode: return fixed position
         if self.params.standing_mode:
@@ -273,8 +352,22 @@ class PositionControlWalkingController:
         # 3. Compute desired ZMP
         zmp_desired = self._compute_desired_zmp(left_foot_target_world, right_foot_target_world, contacts)
 
-        # 4. Plan CoM trajectory to track ZMP
-        com_pos, com_vel, com_acc = self.com_planner.compute_com_command(zmp_desired)
+        # Feedback: adjust ZMP target based on estimated ZMP error
+        zmp_actual = self._estimate_zmp_actual()
+        zmp_error = zmp_desired - zmp_actual
+        zmp_correction = self.params.zmp_feedback_gain * zmp_error
+        zmp_correction = np.clip(zmp_correction,
+                                 -self.params.zmp_correction_limit,
+                                 self.params.zmp_correction_limit)
+        zmp_command = zmp_desired + zmp_correction
+
+        # 4. Plan CoM trajectory to track ZMP (anchor planner state to estimate)
+        self.com_planner.planner_x.com_pos = com_pos_est[0]
+        self.com_planner.planner_y.com_pos = com_pos_est[1]
+        self.com_planner.planner_x.com_vel = com_vel_est[0]
+        self.com_planner.planner_y.com_vel = com_vel_est[1]
+
+        com_pos, com_vel, com_acc = self.com_planner.compute_com_command(zmp_command)
         com_target = np.array([com_pos[0], com_pos[1], self.params.ik.com_height])
 
         # 5. Solve full-body IK
