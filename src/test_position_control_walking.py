@@ -385,6 +385,158 @@ def test_minimal_walking():
     return success
 
 
+def test_disturbance_rejection():
+    """
+    Test 3: Disturbance/Push Rejection During Walking
+
+    Apply external pushes to test ZMP feedback robustness.
+    Success: Robot recovers from pushes without falling
+    """
+    print("\n" + "=" * 60)
+    print("Test 3: Disturbance/Push Rejection During Walking")
+    print("=" * 60)
+
+    # Test various push magnitudes and directions
+    push_configs = [
+        {"name": "Forward Push (50N)", "force": [50, 0, 0], "time": 3.0, "duration": 0.1},
+        {"name": "Backward Push (50N)", "force": [-50, 0, 0], "time": 5.0, "duration": 0.1},
+        {"name": "Lateral Push Right (30N)", "force": [0, -30, 0], "time": 7.0, "duration": 0.1},
+        {"name": "Lateral Push Left (30N)", "force": [0, 30, 0], "time": 9.0, "duration": 0.1},
+    ]
+
+    all_results = []
+
+    for push_config in push_configs:
+        print(f"\n--- Testing: {push_config['name']} ---")
+        robot_id, joint_dict = setup_robot()
+
+        # Create controller with default gait
+        params = WalkingControllerParams(standing_mode=False, enable_walking=True)
+        controller = PositionControlWalkingController(robot_id, joint_dict, params)
+        controller.reset()
+
+        # Simulation parameters
+        sim_dt = 0.001
+        control_dt = 0.02
+        duration = 12.0  # Longer to see recovery
+        num_sim_steps = int(duration / sim_dt)
+        control_decimation = int(control_dt / sim_dt)
+
+        # Data logging
+        time_log = []
+        state_log = []
+        push_applied = False
+        push_start_time = push_config["time"]
+        push_end_time = push_start_time + push_config["duration"]
+
+        print(f"  Push will be applied at t={push_start_time:.1f}s for {push_config['duration']}s")
+        print(f"  Force: {push_config['force']} N\n")
+
+        position_commands = None
+        failed = False
+        for step in range(num_sim_steps):
+            t = step * sim_dt
+
+            # Update control at lower frequency
+            if step % control_decimation == 0:
+                position_commands = controller.update(control_dt)
+
+            if position_commands is None:
+                print(f"\n✗ Robot fell at t={t:.2f}s")
+                failed = True
+                break
+
+            # Apply position control
+            apply_position_control(robot_id, joint_dict, position_commands)
+
+            # Apply push during specified time window
+            if push_start_time <= t <= push_end_time:
+                if not push_applied:
+                    print(f"  >>> Applying push at t={t:.2f}s <<<")
+                    push_applied = True
+                # Apply force continuously during push duration
+                p.applyExternalForce(
+                    objectUniqueId=robot_id,
+                    linkIndex=-1,  # Base link
+                    forceObj=push_config["force"],
+                    posObj=[0, 0, 0],
+                    flags=p.LINK_FRAME
+                )
+            elif push_applied and t > push_end_time:
+                print(f"  >>> Push ended at t={t:.2f}s <<<")
+                push_applied = False  # Reset for logging
+
+            # Step simulation
+            p.stepSimulation()
+
+            # Log state (every 10ms)
+            if step % 10 == 0:
+                state = get_robot_state(robot_id)
+                time_log.append(t)
+                state_log.append(state)
+
+                if step % 1000 == 0:  # Print every second
+                    print(f"  t={t:.1f}s: Roll={state['roll']:+6.2f}°, Pitch={state['pitch']:+6.2f}°, X={state['x']:+.3f}m")
+
+        # Analyze results
+        if not failed:
+            time_log = np.array(time_log)
+            roll_log = np.array([s['roll'] for s in state_log])
+            pitch_log = np.array([s['pitch'] for s in state_log])
+            x_log = np.array([s['x'] for s in state_log])
+            height_log = np.array([s['z'] for s in state_log])
+
+            # Check stability after push (last 2 seconds)
+            post_push_idx = int(len(time_log) * 0.85)
+            roll_final = np.mean(roll_log[post_push_idx:])
+            pitch_final = np.mean(pitch_log[post_push_idx:])
+            forward_distance = x_log[-1] - x_log[0]
+
+            print(f"\n  Results:")
+            print(f"    Forward distance: {forward_distance:.3f}m")
+            print(f"    Final Roll: {roll_final:+6.2f}°")
+            print(f"    Final Pitch: {pitch_final:+6.2f}°")
+            print(f"    Final Height: {height_log[-1]:.3f}m")
+
+            # Success: recovered from push (roll/pitch < 20°, didn't fall)
+            success = abs(roll_final) < 20.0 and abs(pitch_final) < 20.0
+            status = "✓ PASS" if success else "✗ FAIL"
+            print(f"  {status}: Recovered from {push_config['name']}")
+
+            all_results.append({
+                "name": push_config["name"],
+                "success": success,
+                "roll": roll_final,
+                "pitch": pitch_final,
+                "distance": forward_distance
+            })
+        else:
+            all_results.append({
+                "name": push_config["name"],
+                "success": False,
+                "roll": None,
+                "pitch": None,
+                "distance": 0.0
+            })
+
+        p.disconnect()
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("Disturbance Rejection Summary")
+    print("=" * 60)
+    for result in all_results:
+        status = "✓ PASS" if result["success"] else "✗ FAIL"
+        if result["roll"] is not None:
+            print(f"  {status}: {result['name']} - Roll={result['roll']:+.2f}°, Pitch={result['pitch']:+.2f}°, Dist={result['distance']:.3f}m")
+        else:
+            print(f"  {status}: {result['name']} - Robot fell")
+
+    # Overall success: robot recovered from at least 75% of pushes
+    overall_success = sum(1 for r in all_results if r["success"]) >= 3
+    return overall_success
+
+
 def run_gain_sweep():
     """
     Optional: sweep ZMP feedback gains to observe forward progress impact.
@@ -442,10 +594,19 @@ if __name__ == "__main__":
 
     results = []
 
+    # Check if disturbance test is requested
+    run_disturbance_test = os.environ.get("DISTURBANCE_TEST") in ("1", "true", "True")
+
     # Run tests
     try:
         results.append(("Standing Mode", test_standing_mode()))
         results.append(("Minimal Walking", test_minimal_walking()))
+
+        # Run disturbance test if requested
+        if run_disturbance_test:
+            results.append(("Disturbance Rejection", test_disturbance_rejection()))
+
+        # Run gain sweep if requested
         run_gain_sweep()
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
@@ -465,7 +626,8 @@ if __name__ == "__main__":
     all_passed = all(result[1] for result in results)
     print("\n" + "=" * 60)
     if all_passed:
-        print("✓ ALL TESTS PASSED - Phase 4.3 Integration Successful")
+        status_msg = "Phase 4.4 Complete" if run_disturbance_test else "Phase 4.3 Integration Successful"
+        print(f"✓ ALL TESTS PASSED - {status_msg}")
     else:
         print("✗ SOME TESTS FAILED - Review results above")
     print("=" * 60)

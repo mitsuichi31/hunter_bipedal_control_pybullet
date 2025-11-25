@@ -361,6 +361,52 @@ class HunterSimulation:
         """Get contact points on the robot"""
         return p.getContactPoints(bodyA=self.robot_id)
 
+    def apply_external_force(self, force: List[float], position: Optional[List[float]] = None,
+                            link_index: int = -1, flags: int = p.WORLD_FRAME):
+        """
+        Apply external force to the robot (for disturbance/push testing)
+
+        Args:
+            force: Force vector [fx, fy, fz] in Newtons
+            position: Position to apply force (default: center of mass of link)
+            link_index: Link index to apply force to (-1 for base link)
+            flags: Reference frame (p.WORLD_FRAME or p.LINK_FRAME)
+        """
+        if position is None:
+            # Apply at center of mass of the link
+            p.applyExternalForce(
+                objectUniqueId=self.robot_id,
+                linkIndex=link_index,
+                forceObj=force,
+                posObj=[0, 0, 0],  # At COM
+                flags=p.LINK_FRAME
+            )
+        else:
+            p.applyExternalForce(
+                objectUniqueId=self.robot_id,
+                linkIndex=link_index,
+                forceObj=force,
+                posObj=position,
+                flags=flags
+            )
+
+    def apply_external_torque(self, torque: List[float], link_index: int = -1,
+                             flags: int = p.WORLD_FRAME):
+        """
+        Apply external torque to the robot
+
+        Args:
+            torque: Torque vector [tx, ty, tz] in N·m
+            link_index: Link index to apply torque to (-1 for base link)
+            flags: Reference frame (p.WORLD_FRAME or p.LINK_FRAME)
+        """
+        p.applyExternalTorque(
+            objectUniqueId=self.robot_id,
+            linkIndex=link_index,
+            torqueObj=torque,
+            flags=flags
+        )
+
     def disconnect(self):
         """Disconnect from PyBullet"""
         if self.physics_client is not None:
