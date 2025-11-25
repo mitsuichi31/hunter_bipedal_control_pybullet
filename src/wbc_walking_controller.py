@@ -28,6 +28,7 @@ from wbc_tasks import (
 from contact_state_machine import ContactStateMachine, ContactStateParams, ContactPhase
 from inverse_dynamics import InverseDynamics
 from stability_metrics import compute_com, compute_zmp
+from inverse_kinematics import BipedalIKSolver
 
 
 class ContactTransitionManager:
@@ -209,6 +210,9 @@ class WBCWalkingController:
         self.wbc = WholeBodyController(robot_id, joint_dict, self.wbc_params)
         self.inv_dyn = InverseDynamics(robot_id)
         self.task_hierarchy = TaskHierarchy()
+
+        # Phase 3: IK solver for walking mode
+        self.ik_solver = BipedalIKSolver(robot_id, joint_dict)
 
         # Contact transition manager
         self.transition_manager = ContactTransitionManager(
@@ -698,16 +702,13 @@ class WBCWalkingController:
         """
         Compute joint position commands using stable position control
 
-        Phase 2 Implementation: Matches working standing-mpc mode architecture.
-        Uses straight-leg configuration with minimal orientation corrections.
-
-        Note: WBC tasks are still built (for future walking mode) but we
-        directly return position commands instead of computing torques.
+        Phase 2: Standing mode - straight legs with PD corrections
+        Phase 3: Walking mode - IK-based swing foot tracking + stance leg stability
 
         Args:
             robot_state: Current robot state
-            gait_targets: Target foot positions
-            current_contact: Contact state
+            gait_targets: Target foot positions (from gait generator)
+            current_contact: Contact state (left_contact, right_contact)
 
         Returns:
             joint_commands: Dictionary with {joint_name: {'mode': 'position', 'value': angle}}
@@ -735,6 +736,54 @@ class WBCWalkingController:
             'leg_r4_joint': 0.0,
             'leg_r5_joint': 0.0 - hip_pitch_correction + ankle_pitch_correction,
         }
+
+        # Phase 3: Walking mode with IK
+        if not self.walking_params.standing_mode:
+            # Walking mode: use IK for swing foot, keep stance foot stable
+            left_contact, right_contact = current_contact
+
+            # Get target foot positions from gait generator
+            left_target = gait_targets.get('left_foot', None)
+            right_target = gait_targets.get('right_foot', None)
+
+            # Debug: Print foot targets and contact state
+            if self.time < 3.0 and int(self.time * 1000) % 500 == 0:  # Print every 0.5s for first 3 seconds
+                print(f"[IK Debug] t={self.time:.2f}s | contacts=({left_contact}, {right_contact}) | "
+                      f"left_target={left_target} | right_target={right_target}")
+
+            # Process left foot
+            if left_target is not None and not left_contact:
+                # Left foot is swinging - use IK
+                # Convert to base frame for IK (gait generator gives world frame)
+                base_pos = np.array(robot_state['base_pos'])
+                left_target_base = left_target - base_pos if hasattr(left_target, '__len__') else left_target
+
+                left_ik_solution = self.ik_solver.solve_left_leg(
+                    target_position=left_target_base.tolist() if hasattr(left_target_base, 'tolist') else left_target_base
+                )
+                if left_ik_solution:
+                    # Update left leg joint positions with IK solution
+                    for joint_name, angle in left_ik_solution.items():
+                        standing_positions[joint_name] = angle
+                    if self.time < 3.0:
+                        print(f"  [IK] Left leg IK solution: {list(left_ik_solution.values())[:3]}...")
+
+            # Process right foot
+            if right_target is not None and not right_contact:
+                # Right foot is swinging - use IK
+                # Convert to base frame for IK
+                base_pos = np.array(robot_state['base_pos'])
+                right_target_base = right_target - base_pos if hasattr(right_target, '__len__') else right_target
+
+                right_ik_solution = self.ik_solver.solve_right_leg(
+                    target_position=right_target_base.tolist() if hasattr(right_target_base, 'tolist') else right_target_base
+                )
+                if right_ik_solution:
+                    # Update right leg joint positions with IK solution
+                    for joint_name, angle in right_ik_solution.items():
+                        standing_positions[joint_name] = angle
+                    if self.time < 3.0:
+                        print(f"  [IK] Right leg IK solution: {list(right_ik_solution.values())[:3]}...")
 
         # Convert to hybrid command format for main_simulation.py
         joint_commands = {}
