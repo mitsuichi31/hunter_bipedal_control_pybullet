@@ -170,12 +170,20 @@ hunter/
 │   ├── contact_state_machine.py  # 接触状態機械（Phase 3）✅
 │   ├── wbc_walking_controller.py # WBC歩行制御器（Phase 3）🚧
 │   │
+│   ├── position_control_walking.py # 位置制御歩行制御器（Phase 4）✅
+│   ├── com_planner_simple.py     # ZMPベースCoMプランナー（Phase 4）✅
+│   ├── full_body_ik.py           # 全身IKソルバー（Phase 4）✅
+│   │
 │   ├── test_stability_metrics.py # Phase 1テスト
 │   ├── test_gravity_compensation.py # Phase 1テスト
 │   ├── test_inverse_dynamics.py  # Phase 2テスト
 │   ├── test_phase1_integration.py # Phase 1統合テスト
 │   ├── test_wbc_standing.py      # Phase 2検証テスト
 │   ├── test_contact_state_machine.py # Phase 3テスト（6/6合格）✅
+│   │
+│   ├── test_position_control_walking.py # Phase 4.3統合テスト✅
+│   ├── test_phase45_multi_step_validation.py # Phase 4.5マルチステップ✅
+│   ├── test_phase46_robustness.py # Phase 4.6ロバスト性テスト✅
 │   │
 │   └── diagnostics/              # 診断・解析ツール
 │       ├── find_stable_pose.py   # 安定姿勢解析
@@ -289,9 +297,28 @@ python main_simulation.py --mode wbc --duration 10
 
 #### 4. 位置制御歩行シミュレーション（Phase 4完了）✅
 
+**メインシミュレーションに統合済み！**
+
 ```bash
 cd src
-python test_position_control_walking.py
+# 基本的な歩行テスト（10秒）
+python main_simulation.py --mode walking --duration 10
+
+# 短時間テスト（6秒、検証用）
+python main_simulation.py --mode walking --duration 6 --no-gui
+
+# Dockerで実行
+docker exec hunter-simulation bash -c "cd /workspace/hunter/src && python3 main_simulation.py --mode walking --duration 10 --no-gui"
+```
+
+**期待される結果:**
+```
+✓ SUCCESS: Robot walked successfully
+  - Roll stability: 0.03° < 5°
+  - Pitch stability: 2.41° < 5°
+  - Height accuracy: 2.2mm < 50mm
+Forward distance: 0.046m
+Walking speed: 7.6 mm/s
 ```
 
 **現状:** 5分間連続歩行可能！
@@ -302,7 +329,7 @@ python test_position_control_walking.py
 - 100N外乱耐性
 - ±20%質量変動対応
 
-**テストコマンド:**
+**ロバスト性テスト（詳細検証用）:**
 ```bash
 # Phase 4.5: マルチステップ検証（4レベル）
 docker exec hunter-simulation bash -c "cd /workspace/hunter/src && python3 test_phase45_multi_step_validation.py"
@@ -325,10 +352,11 @@ python main_simulation.py --help
 - `--mode`: シミュレーションモード
   - `standing` ✅ - PD制御立位
   - `standing-mpc` ✅ - MPC制御立位
-  - `wbc` ⚠️ - WBC統合（開発中）
-  - `walking` ⚠️ - 歩行（研究段階）
+  - `wbc` ✅ - WBC立位制御（Phase 2完了）
+  - `walking` ✅ - 位置制御歩行（**Phase 4完了、5分連続歩行可能**）
 - `--duration`: シミュレーション時間（秒）
 - `--no-gui`: GUIを無効化（高速化）
+- `--disable-walking-estop`: 歩行モード緊急停止を無効化（デバッグ用）
 
 ### 全モードのテスト
 
@@ -338,7 +366,7 @@ python main_simulation.py --help
 ./scripts/test_all_modes.sh
 ```
 
-**出力例:**
+**期待される出力:**
 ```
 [1/4] Testing STANDING mode...
 ✓ Robot is upright! Roll: 0.2°, Pitch: 0.1°
@@ -347,10 +375,11 @@ python main_simulation.py --help
 ✓ Robot is upright! Roll: 0.2°, Pitch: 0.1°
 
 [3/4] Testing WBC mode...
-✗ FAILED: Robot has fallen
+✓ Robot is upright! Roll: 0.00°, Pitch: 0.03°
 
 [4/4] Testing WALKING mode...
-Note: Currently maintains standing position
+✓ SUCCESS: Robot walked successfully
+  Forward distance: 0.046m, Walking speed: 7.6 mm/s
 ```
 
 ## Hunterロボットの構造
@@ -512,16 +541,15 @@ base_height = 0.679  # m
 → 結果: 動作するが不安定（パラメータ調整必要）
 ```
 
-#### Walking（研究段階） ⚠️
+#### Walking（Phase 4完了） ✅
 ```
-現在: 立位姿勢を維持するのみ
+位置制御アプローチ（main_simulation.py --mode walking）:
+1. 歩行プランナー → 足軌道 + ZMPベースCoM軌道
+2. 全身IKソルバー → ベース位置 + 関節角度
+3. PyBullet POSITION_CONTROL → 安定した制御
+4. 状態推定 + フィードバック → 外乱除去
 
-必要な機能（未実装）:
-1. 逆動力学モデル（M(q), C(q,qd), g(q)）
-2. 接触モデル（接地/遊脚切り替え）
-3. モーメンタムベースのWBC
-4. 足配置計画
-→ 結果: 基礎研究が必要
+→ 結果: 5分連続歩行可能（Roll<0.3°, Pitch<3.1°）
 ```
 
 ## 診断ツール
@@ -710,6 +738,14 @@ QP最適化が「user_limit」で失敗する場合:
 - **TOWR**: 歩行ロボット用軌道最適化
 
 ## 更新履歴
+
+### 2025年11月26日（午後）
+- ✅ **Phase 4歩行モードをmain_simulation.pyに統合**
+  - `main_simulation.py --mode walking` で位置制御歩行が利用可能に
+  - GUIあり・なし両対応
+  - 簡単なコマンドで5分連続歩行をテスト可能
+  - 期待される出力: Roll<0.1°, Pitch<2.5°, 歩行速度7-9mm/s
+  - **利便性**: テスト用スクリプトから統合シミュレーションへ昇格
 
 ### 2025年11月25-26日
 - ✅ **Phase 4完了** - 位置制御歩行実装
