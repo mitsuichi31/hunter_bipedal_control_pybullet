@@ -20,6 +20,8 @@ from wbc_tasks import (
     create_body_position_task,
     create_com_tracking_task
 )
+from stability_metrics import compute_com, compute_com_velocity
+from inverse_dynamics import InverseDynamics
 
 
 class MPCWBCController:
@@ -37,7 +39,9 @@ class MPCWBCController:
                  robot_id: int,
                  joint_dict: Dict[str, int],
                  mpc_params: MPCParams = None,
-                 wbc_params: WBCParams = None):
+                 wbc_params: WBCParams = None,
+                 use_torque_control: bool = False,
+                 use_hybrid_control: bool = False):
         """
         Initialize integrated controller
 
@@ -46,19 +50,63 @@ class MPCWBCController:
             joint_dict: Dictionary mapping joint names to indices
             mpc_params: MPC parameters
             wbc_params: WBC parameters
+            use_torque_control: If True, compute actual torques; if False, use position control
+            use_hybrid_control: If True, use position control on hips/knees, torque on ankles
         """
         self.robot_id = robot_id
         self.joint_dict = joint_dict
+        self.use_torque_control = use_torque_control
+        self.use_hybrid_control = use_hybrid_control
+
+        # Define which joints are torque-controlled in hybrid mode (ankles only)
+        self.torque_controlled_joints = ['leg_l5_joint', 'leg_r5_joint']
+        self.position_controlled_joints = [
+            'leg_l1_joint', 'leg_l2_joint', 'leg_l3_joint', 'leg_l4_joint',
+            'leg_r1_joint', 'leg_r2_joint', 'leg_r3_joint', 'leg_r4_joint'
+        ]
 
         # Create sub-controllers
         self.mpc = LinearInvertedPendulumMPC(mpc_params)
         self.wbc = WholeBodyController(robot_id, joint_dict, wbc_params)
+
+        # Inverse dynamics (Phase 2.2)
+        self.inv_dyn = InverseDynamics(robot_id)
 
         # Task hierarchy
         self.task_hierarchy = TaskHierarchy()
 
         # State
         self.time = 0.0
+
+        # Foot reference positions (for anchoring)
+        self.foot_reference_positions = None  # Will be set on first update
+
+        # Torque control parameters (matching walking controller)
+        # Allow override via environment variable for diagnostics
+        import os
+        default_torque_limit = float(os.environ.get("WBC_TORQUE_LIMIT", "20.0"))
+        self.torque_limit = default_torque_limit  # Nm
+        self.posture_kp = 15.0    # Joint-space posture hold
+        self.posture_kd = 1.5     # Joint-space damping
+        self.joint_damping_gain = 0.3  # Additional damping
+        self.com_height_target = 0.65  # Target CoM height
+        self.height_kp = 60.0
+        self.height_kd = 6.0
+
+        # Diagnostics
+        self._diag_steps_logged = 0
+
+        if use_torque_control or use_hybrid_control:
+            if use_hybrid_control:
+                print(f"[WBC] HYBRID MODE: Position control on hips/knees, torque on ankles")
+                print(f"[WBC]   Torque-controlled: {self.torque_controlled_joints}")
+                print(f"[WBC]   Position-controlled: {self.position_controlled_joints}")
+            else:
+                print(f"[WBC] FULL TORQUE MODE: All joints use torque control")
+            print(f"[WBC] Torque limit: ±{self.torque_limit} Nm")
+            print(f"[WBC] Posture PD: Kp={self.posture_kp}, Kd={self.posture_kd}")
+            print(f"[WBC] Joint damping: {self.joint_damping_gain}")
+            print(f"[WBC] Target CoM height: {self.com_height_target}m")
 
     def update(self, dt: float) -> Dict[str, float]:
         """
@@ -137,19 +185,51 @@ class MPCWBCController:
         # 4. Get desired accelerations from task hierarchy
         desired_base_accel, _ = self.task_hierarchy.get_desired_acceleration()
 
-        # 5. WBC: Compute ground reaction forces
+        # Add height regulation to base acceleration
+        com_z = com_state[2]
+        com_dz = com_state[5]
+        height_error = self.com_height_target - com_z
+        desired_base_accel[2] += (
+            self.height_kp * height_error
+            - self.height_kd * com_dz
+        )
+
+        # Initialize foot reference positions on first update (for anchoring)
+        if self.foot_reference_positions is None:
+            self.foot_reference_positions = [fp.copy() for fp in foot_positions]
+
+        # Get foot velocities for anchoring
+        foot_velocities = self._get_foot_velocities()
+
+        # 5. WBC: Compute ground reaction forces (with foot anchoring)
         ground_forces = self.wbc.compute_ground_reaction_forces(
             desired_base_accel=desired_base_accel,
             foot_positions=foot_positions,
-            foot_contacts=foot_contacts
+            foot_contacts=foot_contacts,
+            foot_reference_positions=self.foot_reference_positions,
+            foot_velocities=foot_velocities
         )
 
         # 6. Convert forces to joint commands
-        # For PyBullet position control, we approximate this
-        joint_commands = self._forces_to_joint_positions(
-            ground_forces=ground_forces,
-            foot_positions=foot_positions
-        )
+        if self.use_hybrid_control:
+            # Hybrid mode: position control on hips/knees, torque on ankles
+            joint_commands = self._compute_hybrid_control(
+                ground_forces=ground_forces,
+                foot_contacts=foot_contacts,
+                foot_positions=foot_positions
+            )
+        elif self.use_torque_control:
+            # Use actual torque control (like walking controller)
+            joint_commands = self._compute_torques_from_forces(
+                ground_forces=ground_forces,
+                foot_contacts=foot_contacts
+            )
+        else:
+            # Use position control (original method)
+            joint_commands = self._forces_to_joint_positions(
+                ground_forces=ground_forces,
+                foot_positions=foot_positions
+            )
 
         return joint_commands
 
@@ -157,15 +237,18 @@ class MPCWBCController:
         """
         Get CoM position and velocity
 
+        Uses accurate computation from Phase 1 that considers all links.
+
         Returns:
             state: [x, y, z, dx, dy, dz]
         """
-        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
-        base_vel, _ = p.getBaseVelocity(self.robot_id)
+        # Use accurate CoM from stability_metrics (Phase 1.1)
+        com_pos = compute_com(self.robot_id)
+        com_vel = compute_com_velocity(self.robot_id)
 
         return np.array([
-            base_pos[0], base_pos[1], base_pos[2],
-            base_vel[0], base_vel[1], base_vel[2]
+            com_pos[0], com_pos[1], com_pos[2],
+            com_vel[0], com_vel[1], com_vel[2]
         ])
 
     def _get_base_orientation(self) -> np.ndarray:
@@ -215,6 +298,288 @@ class MPCWBCController:
 
         return foot_positions, foot_contacts
 
+    def _get_foot_velocities(self) -> List[np.ndarray]:
+        """
+        Get foot velocities in world frame
+
+        Returns:
+            foot_velocities: List of foot velocities [vx, vy, vz]
+        """
+        foot_velocities = []
+
+        # Find foot links
+        foot_links = []
+        for i in range(p.getNumJoints(self.robot_id)):
+            joint_info = p.getJointInfo(self.robot_id, i)
+            link_name = joint_info[12].decode('utf-8')
+            if 'foot' in link_name.lower() or ('l5' in link_name or 'r5' in link_name):
+                foot_links.append(i)
+
+        for link_idx in foot_links:
+            # Get link velocity
+            link_state = p.getLinkState(self.robot_id, link_idx, computeLinkVelocity=1)
+            linear_velocity = np.array(link_state[6])  # World linear velocity
+            foot_velocities.append(linear_velocity)
+
+        # Ensure we have at least 2 feet (fallback)
+        if len(foot_velocities) < 2:
+            for joint_name in ['leg_l5_joint', 'leg_r5_joint']:
+                if joint_name in self.joint_dict:
+                    idx = self.joint_dict[joint_name]
+                    link_state = p.getLinkState(self.robot_id, idx, computeLinkVelocity=1)
+                    linear_velocity = np.array(link_state[6])
+                    foot_velocities.append(linear_velocity)
+
+        return foot_velocities
+
+    def _compute_hybrid_control(self,
+                                ground_forces: np.ndarray,
+                                foot_contacts: List[bool],
+                                foot_positions: List[np.ndarray]) -> Dict[str, float]:
+        """
+        Compute hybrid control: position control on hips/knees, torque on ankles
+
+        This preserves the stable posture via position control while allowing
+        WBC to adjust balance through ankle torques.
+
+        Args:
+            ground_forces: Nx3 array of ground forces from WBC QP
+            foot_contacts: List of contact flags
+            foot_positions: List of foot positions (for fallback)
+
+        Returns:
+            Dictionary with 'torque' and 'position' entries for each joint
+        """
+        # Compute full torques from WBC
+        all_torques = self._compute_torques_from_forces(ground_forces, foot_contacts)
+
+        # Get standing configuration positions
+        standing_config = {
+            'leg_l1_joint': -0.1,
+            'leg_l2_joint': 0.0,
+            'leg_l3_joint': 0.0,
+            'leg_l4_joint': 0.0,
+            'leg_l5_joint': 0.0,
+            'leg_r1_joint': 0.1,
+            'leg_r2_joint': 0.0,
+            'leg_r3_joint': 0.0,
+            'leg_r4_joint': 0.0,
+            'leg_r5_joint': 0.0,
+        }
+
+        # Build hybrid commands
+        hybrid_commands = {}
+        for joint_name in self.joint_dict.keys():
+            if joint_name in self.torque_controlled_joints:
+                # Ankle: use WBC torque
+                hybrid_commands[joint_name] = {
+                    'mode': 'torque',
+                    'value': all_torques.get(joint_name, 0.0)
+                }
+            elif joint_name in self.position_controlled_joints:
+                # Hip/Knee: use position control
+                hybrid_commands[joint_name] = {
+                    'mode': 'position',
+                    'value': standing_config.get(joint_name, 0.0)
+                }
+            else:
+                # Unknown joint, default to zero
+                hybrid_commands[joint_name] = {
+                    'mode': 'position',
+                    'value': 0.0
+                }
+
+        return hybrid_commands
+
+    def _compute_torques_from_forces(self,
+                                     ground_forces: np.ndarray,
+                                     foot_contacts: List[bool]) -> Dict[str, float]:
+        """
+        Compute joint torques from ground reaction forces using actual torque control
+
+        This mirrors the walking controller's approach:
+        τ_total = τ_gravity + τ_contact + τ_posture + τ_damping
+
+        Args:
+            ground_forces: Nx3 array of ground forces from WBC QP
+            foot_contacts: List of contact flags
+
+        Returns:
+            joint_torques: Dictionary of joint torques
+        """
+        # Get current joint states
+        joint_positions, joint_velocities = self._get_actuated_joint_states()
+
+        # 1. Gravity compensation
+        gravity_torques = self.inv_dyn.compute_gravity_torques(joint_positions)
+
+        # 2. Contact forces to joint torques via Jacobians
+        foot_jacs = self._compute_contact_jacobians()
+        contact_torques = np.zeros_like(gravity_torques)
+
+        for i, foot_name in enumerate(["left_foot", "right_foot"]):
+            if not foot_contacts[i]:
+                continue
+            J = foot_jacs.get(foot_name)
+            if J is None:
+                continue
+            contact_torques += J.T @ ground_forces[i]
+
+        # 3. Posture PD (hold standing configuration)
+        posture_torques = self._compute_posture_pd(joint_positions, joint_velocities)
+
+        # 4. Additional joint damping
+        damping = -self.joint_damping_gain * joint_velocities
+
+        # Total and clamp
+        unclipped_torques = gravity_torques + contact_torques + posture_torques + damping
+        total_torques = np.clip(unclipped_torques,
+                                -self.torque_limit,
+                                self.torque_limit)
+
+        # Diagnostics (first 30 steps)
+        if self._diag_steps_logged < 30:
+            if self._diag_steps_logged == 0:
+                print(f"[WBC Standing Torque Control] Starting diagnostics...")
+                print(f"  posture_targets={np.round(self._get_posture_targets(), 3)}")
+                print(f"  joint_pos={np.round(joint_positions, 3)}")
+
+            force_norms = [float(np.linalg.norm(f)) for f in ground_forces]
+            jac_ok = all(J is not None for J in foot_jacs.values())
+            print(
+                f"[WBC-TC] t={self.time:6.3f}s"
+                f" | force_norms={np.round(force_norms, 1)}"
+                f" | contact_tau={np.linalg.norm(contact_torques):6.2f}"
+                f" | grav_tau={np.linalg.norm(gravity_torques):6.2f}"
+                f" | posture_tau={np.linalg.norm(posture_torques):6.2f}"
+                f" | damp={np.linalg.norm(damping):6.2f}"
+                f" | unclipped_max={np.max(np.abs(unclipped_torques)):6.2f}"
+                f" -> clipped_max={np.max(np.abs(total_torques)):6.2f}"
+                f" | jac_ok={jac_ok}"
+            )
+            self._diag_steps_logged += 1
+
+        return self._map_torques_to_dict(total_torques)
+
+    def _get_actuated_joint_states(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Get positions and velocities of actuated joints in order"""
+        positions = []
+        velocities = []
+
+        for joint_idx in self.inv_dyn._actuated_joints:
+            state = p.getJointState(self.robot_id, joint_idx)
+            positions.append(state[0])
+            velocities.append(state[1])
+
+        return np.array(positions), np.array(velocities)
+
+    def _get_posture_targets(self) -> np.ndarray:
+        """Get target joint positions for standing posture (straight legs)"""
+        standing_config = {
+            'leg_l1_joint': -0.1,
+            'leg_l2_joint': 0.0,
+            'leg_l3_joint': 0.0,
+            'leg_l4_joint': 0.0,
+            'leg_l5_joint': 0.0,
+            'leg_r1_joint': 0.1,
+            'leg_r2_joint': 0.0,
+            'leg_r3_joint': 0.0,
+            'leg_r4_joint': 0.0,
+            'leg_r5_joint': 0.0,
+        }
+
+        targets = []
+        for joint_idx in self.inv_dyn._actuated_joints:
+            joint_name = self.inv_dyn._joint_names.get(joint_idx)
+            if joint_name in standing_config:
+                targets.append(standing_config[joint_name])
+            else:
+                targets.append(0.0)
+
+        return np.array(targets)
+
+    def _compute_posture_pd(self,
+                            joint_positions: np.ndarray,
+                            joint_velocities: np.ndarray) -> np.ndarray:
+        """Compute PD torques to maintain standing posture"""
+        targets = self._get_posture_targets()
+        pos_err = targets - joint_positions
+        return (
+            self.posture_kp * pos_err
+            - self.posture_kd * joint_velocities
+        )
+
+    def _compute_contact_jacobians(self) -> Dict[str, np.ndarray]:
+        """
+        Compute linear Jacobians for both feet (actuated joints only)
+
+        Returns:
+            Dictionary with 'left_foot' and 'right_foot' keys containing 3xN Jacobians
+        """
+        jacobians = {}
+
+        # Find foot link indices
+        foot_link_mapping = {
+            'left_foot': None,
+            'right_foot': None
+        }
+
+        for i in range(p.getNumJoints(self.robot_id)):
+            joint_info = p.getJointInfo(self.robot_id, i)
+            link_name = joint_info[12].decode('utf-8')
+
+            if 'l5' in link_name or 'left_foot' in link_name.lower():
+                foot_link_mapping['left_foot'] = i
+            elif 'r5' in link_name or 'right_foot' in link_name.lower():
+                foot_link_mapping['right_foot'] = i
+
+        # Get current joint states for Jacobian calculation
+        joint_positions = []
+        joint_velocities = []
+        joint_accelerations = []
+
+        # Base state (free-floating)
+        base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
+        base_vel, base_ang_vel = p.getBaseVelocity(self.robot_id)
+
+        # Actuated joints
+        for joint_idx in self.inv_dyn._actuated_joints:
+            state = p.getJointState(self.robot_id, joint_idx)
+            joint_positions.append(state[0])
+            joint_velocities.append(state[1])
+            joint_accelerations.append(0.0)  # Assume zero acceleration for Jacobian
+
+        # Compute Jacobians
+        for foot_name, link_idx in foot_link_mapping.items():
+            if link_idx is None:
+                jacobians[foot_name] = None
+                continue
+
+            # Get full Jacobian (includes base DOFs)
+            jac_t, jac_r = p.calculateJacobian(
+                self.robot_id,
+                link_idx,
+                localPosition=[0, 0, 0],
+                objPositions=list(joint_positions),
+                objVelocities=list(joint_velocities),
+                objAccelerations=list(joint_accelerations)
+            )
+
+            # Convert to numpy and extract actuated joints (skip base columns)
+            jac_linear = np.array(jac_t)[:, 6:]  # Skip 6 base DOFs
+            jacobians[foot_name] = jac_linear
+
+        return jacobians
+
+    def _map_torques_to_dict(self, torques_array: np.ndarray) -> Dict[str, float]:
+        """Map torque array to dictionary with joint names"""
+        torques = {name: 0.0 for name in self.joint_dict.keys()}
+        for i, idx in enumerate(self.inv_dyn._actuated_joints):
+            joint_name = self.inv_dyn._joint_names.get(idx)
+            if joint_name in torques:
+                torques[joint_name] = float(torques_array[i])
+        return torques
+
     def _forces_to_joint_positions(self,
                                    ground_forces: np.ndarray,
                                    foot_positions: List[np.ndarray]) -> Dict[str, float]:
@@ -240,22 +605,23 @@ class MPCWBCController:
         roll = euler[0]
 
         # Compute corrective joint angles (simplified)
-        hip_pitch_correction = -pitch * 0.5
-        ankle_pitch_correction = -pitch * 0.3
-        hip_roll_correction = -roll * 0.3
+        # Use VERY small corrections for straight-leg stability
+        hip_pitch_correction = -pitch * 0.1  # Reduced from 0.5
+        ankle_pitch_correction = -pitch * 0.05  # Reduced from 0.3
+        hip_roll_correction = -roll * 0.1  # Reduced from 0.3
 
-        # Base configuration
+        # Base configuration: STRAIGHT LEGS (critical for stability!)
         base_config = {
             'leg_l1_joint': -0.1 + hip_roll_correction,
             'leg_l2_joint': 0.0,
-            'leg_l3_joint': -0.4 + hip_pitch_correction,
-            'leg_l4_joint': 0.8,
-            'leg_l5_joint': -0.4 - hip_pitch_correction + ankle_pitch_correction,
+            'leg_l3_joint': 0.0 + hip_pitch_correction,  # Straight, not -0.4
+            'leg_l4_joint': 0.0,                         # Straight, not 0.8
+            'leg_l5_joint': 0.0 - hip_pitch_correction + ankle_pitch_correction,  # Straight
             'leg_r1_joint': 0.1 - hip_roll_correction,
             'leg_r2_joint': 0.0,
-            'leg_r3_joint': -0.4 + hip_pitch_correction,
-            'leg_r4_joint': 0.8,
-            'leg_r5_joint': -0.4 - hip_pitch_correction + ankle_pitch_correction,
+            'leg_r3_joint': 0.0 + hip_pitch_correction,  # Straight, not -0.4
+            'leg_r4_joint': 0.0,                         # Straight, not 0.8
+            'leg_r5_joint': 0.0 - hip_pitch_correction + ankle_pitch_correction,  # Straight
         }
 
         return base_config

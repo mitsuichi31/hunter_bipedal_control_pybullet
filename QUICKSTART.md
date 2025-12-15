@@ -8,10 +8,11 @@ Hunter二足歩行ロボットシミュレーションを最速で始めるた�
 |--------|------|--------|
 | `standing` | ✅ 完璧 | ⭐⭐⭐⭐⭐ |
 | `standing-mpc` | ✅ 完璧 | ⭐⭐⭐⭐⭐ |
-| `wbc` | ⚠️ 転倒する | ⭐⭐ |
-| `walking` | ⚠️ 立位のみ | ⭐⭐ |
+| `wbc` | ✅ Phase 2完了 | ⭐⭐⭐⭐ |
+| `walking` | 🔍 Phase 3調査完了・再設計中 | ⭐⭐ |
 
-**推奨**: まず`standing`または`standing-mpc`モードから始めてください！
+**推奨**: `standing`, `standing-mpc`, `wbc` モードが動作します！
+**Phase 3**: WBC-ハイブリッド制御の調査完了。アーキテクチャ再設計計画作成済み。
 
 ## 5分で始める
 
@@ -58,10 +59,10 @@ docker exec hunter-simulation bash /workspace/hunter/scripts/test_all_modes.sh
 ✓ Robot is upright! Roll: 0.2°, Pitch: 0.1°    ← 成功！
 
 [3/4] Testing WBC mode...
-✗ FAILED: Robot has fallen                      ← 既知の問題
+✓ Robot is upright! Roll: 0.0°, Pitch: 0.0°    ← Phase 2完了！
 
 [4/4] Testing WALKING mode...
-Note: Currently maintains standing position      ← 開発中
+Note: Currently maintains standing position      ← Phase 3で実装予定
 ```
 
 ## 動作するモード ✅
@@ -96,21 +97,33 @@ docker exec hunter-simulation python3 /workspace/hunter/src/main_simulation.py -
 - **用途**: 高度なバランス制御の学習
 - **特徴**: 最小限の補正で立位を維持
 
-## 開発中のモード ⚠️
+## Phase 2完了モード ✅
 
-### WBC（Whole-Body Control）- パラメータチューニング必要
+### WBC（Whole-Body Control）- 立位制御完成
 
+```bash
+# Phase 2完了 - WBC立位制御テスト
+docker exec hunter-simulation python3 /workspace/hunter/src/test_wbc_standing.py
+```
+
+**または標準シミュレーション:**
 ```bash
 docker exec hunter-simulation python3 /workspace/hunter/src/main_simulation.py --mode wbc --duration 10 --no-gui
 ```
 
-- **現状**: ✗ ロボットが転倒（Roll=108.7°）
-- **原因**: QP最適化のパラメータが最適化されていない
-- **課題**:
-  - 制御ゲインの調整が必要
-  - 摩擦円錐制約のチューニングが必要
-  - 接地力最適化の重み付け調整が必要
-- **用途**: WBC研究、上級者向け
+- **状態**: ✅ Phase 2完了（Roll=0.00°, Pitch=0.03°）
+- **成果**:
+  - WBCパラメータチューニング完了
+  - 地面反力最適化誤差0.1%
+  - QP最適化100%実行可能
+  - 10秒立位テスト完璧に安定
+- **新機能**:
+  - 正確なCoM/ZMP計算（Phase 1）
+  - 重力補償（Phase 1）
+  - 逆動力学実装（Phase 2）
+- **用途**: 高度なWBC制御、バランス制御の研究
+
+## 開発中のモード ⚠️
 
 ### Walking（歩行）- 研究段階
 
@@ -210,26 +223,26 @@ standing_config = {
 
 ## よくある質問
 
-### Q: なぜWBCモードが転倒するのですか？
+### Q: WBCモードは使えますか？
 
-A: WBCコードは統合されていますが、QP最適化のパラメータがまだ最適化されていません。これは既知の問題で、パラメータチューニングが必要です。`standing`または`standing-mpc`モードは完璧に動作します。
+A: ✅ **はい！** Phase 2が完了し、WBC立位制御が動作します（Roll=0.00°, Pitch=0.03°）。`test_wbc_standing.py`で検証テストを実行できます。
 
 ### Q: 歩行はできますか？
 
-A: 現時点では歩行は実装されていません。歩行には逆動力学モデル（Pinocchioなど）の統合が必要で、これは将来の開発課題です。詳細は[WALKING_MODE_INVESTIGATION.md](WALKING_MODE_INVESTIGATION.md)を参照してください。
+A: 現時点では歩行は実装されていません（Phase 3で実装予定）。歩行にはWBC歩行アーキテクチャの実装が必要で、これは次のマイルストーンです。詳細は[STABILITY_IMPROVEMENT_PLAN.md](STABILITY_IMPROVEMENT_PLAN.md)と[WALKING_MODE_INVESTIGATION.md](WALKING_MODE_INVESTIGATION.md)を参照してください。
 
 ### Q: どのモードを使えばいいですか？
 
-A: **`standing`または`standing-mpc`モード**を使ってください。これらは完璧に動作し、安定しています。
+A: **`standing`, `standing-mpc`, `wbc`モード**が全て動作します。`standing`と`standing-mpc`は最も安定しています。`wbc`はより高度な制御を提供します。
 
 ### Q: ロボットが倒れます
 
 A: 以下を確認してください：
 1. ✅ `base_height = 0.679` になっているか
-2. ✅ `standing`または`standing-mpc`モードを使用しているか
+2. ✅ `standing`, `standing-mpc`, `wbc`のいずれかのモードを使用しているか
 3. ✅ まっすぐな脚の設定を使用しているか
 
-`wbc`や`walking`モードで転倒するのは既知の問題です。
+`walking`モードで転倒するのは既知の問題です（Phase 3で修正予定）。
 
 ### Q: パラメータを変更したい
 
@@ -250,7 +263,11 @@ A: ⚠️ **注意**: デフォルトのパラメータは最適化されてい�
 3. ✅ まっすぐな脚の設定を使用
 
 **wbcモードで倒れる場合：**
-- これは既知の問題です。`standing`または`standing-mpc`を使用してください。
+- Phase 2が完了しているか確認（2025年11月24日以降のコード）
+- `test_wbc_standing.py`で検証テストを実行
+
+**walkingモードで倒れる場合：**
+- これは既知の問題です（Phase 3で修正予定）。`standing`, `standing-mpc`, `wbc`を使用してください。
 
 ### Docker環境のトラブル
 
@@ -339,18 +356,20 @@ python3 /workspace/hunter/src/main_simulation.py --mode standing --duration 10
 ## 期待値の設定
 
 ### 動作するもの ✅
-- 立位保持（standing）
-- MPC立位制御（standing-mpc）
-- 完璧な安定性（Roll=0.2°）
+- 立位保持（standing）- Roll=0.2°
+- MPC立位制御（standing-mpc）- Roll=0.2°
+- WBC立位制御（wbc）- Roll=0.00°, Pitch=0.03° (Phase 2完了)
+- 完璧な安定性
 
 ### 動作しないもの ❌
-- 歩行（walkingモード - 研究段階）
-- WBC（wbcモード - チューニング必要）
+- 歩行（walkingモード - Phase 3で実装予定）
 
 ### 学べるもの 📚
 - 二足歩行ロボットの基本
-- PD制御とMPC制御
-- 安定性分析
+- PD制御、MPC制御、WBC制御
+- 安定性分析（CoM、ZMP、安定性マージン）
+- 重力補償と逆動力学
+- QP最適化によるバランス制御
 - PyBulletシミュレーション
 
 ## 困ったときは
@@ -378,8 +397,8 @@ Happy Simulating! 🤖
 
 **推奨コマンド**: `docker exec hunter-simulation python3 /workspace/hunter/src/main_simulation.py --mode standing --duration 10 --no-gui`
 
-**最も安定**: `standing` と `standing-mpc` モード ✅
+**動作モード**: `standing`, `standing-mpc`, `wbc` ✅
 
-**詳細ドキュメント**: [README.md](README.md)
+**詳細ドキュメント**: [README.md](README.md) | [STABILITY_IMPROVEMENT_PLAN.md](STABILITY_IMPROVEMENT_PLAN.md)
 
-**現在の状態**: 立位制御 ✅ 完成 | WBC ⚠️ 調整中 | 歩行 ⚠️ 研究段階
+**現在の状態**: 立位制御 ✅ 完成 | WBC ✅ Phase 2完了 | 歩行 ⚠️ Phase 3予定

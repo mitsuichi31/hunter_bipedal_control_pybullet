@@ -1,37 +1,34 @@
 # Repository Guidelines
 
-Contributor quickstart for the Hunter bipedal PyBullet simulation. Default to Docker for reproducibility and document any change that affects the stable standing modes.
-
 ## Project Structure & Module Organization
-- `src/`: simulation code; `main_simulation.py` entrypoint, controllers in `*_controller.py`, diagnostics in `src/diagnostics/` (see its README).
-- `config/`: YAML configs such as `default_config.yaml`; do not hide parameters in code.
-- `models/`: URDF and decimated meshes for the Hunter robot; keep assets small.
-- `scripts/`: workflow helpers (`run_docker.sh`, `run_simulation.sh`, `test_all_modes.sh`).
-- `docker-compose.yml`/`Dockerfile`: reproducible container; repo mounts to `/workspace/hunter` inside `hunter-simulation`.
+- Core code lives in `src/`; entry point is `src/main_simulation.py` with modes `standing`, `standing-mpc`, `wbc`, `walking`.
+- Controllers: `pd_controller.py`, `balance_controller.py`, `mpc_controller.py`, `wbc_controller.py`, `wbc_tasks.py`, `mpc_wbc_controller.py`, in-progress `wbc_walking_controller.py`.
+- Supporting modules: kinematics/planning (`inverse_kinematics.py`, `gait_generator.py`), dynamics/stability (`stability_metrics.py`, `gravity_compensation.py`, `inverse_dynamics.py`), contact logic (`contact_state_machine.py`).
+- Tests sit next to code as `test_*.py`; diagnostics live in `src/diagnostics/` with its own README.
+- Config: `config/default_config.yaml`; assets: `models/urdf/hunter.urdf`; scripts: `scripts/`; logs: `logs/`.
 
 ## Build, Test, and Development Commands
-- Install deps locally: `pip install -r requirements.txt` from repo root.
-- Docker flow (recommended): `docker-compose up -d` then `docker-compose exec hunter-sim bash`.
-- Quick run (host): `python src/main_simulation.py --mode standing --duration 5 --no-gui`; in-container, same path under `/workspace/hunter`.
-- Wrapper: `bash scripts/run_simulation.sh standing 10 no-gui` (in container) to exercise a mode.
-- Smoke test suite: `bash scripts/test_all_modes.sh` (standing/standing-mpc should pass; wbc/walking instability is expected—note that in PRs).
+- Install: `pip install -r requirements.txt`.
+- Docker (recommended): `cd docker && docker-compose up -d`; run suite headless via `docker exec hunter-simulation bash /workspace/hunter/scripts/test_all_modes.sh`.
+- Local smoke: `python src/main_simulation.py --mode standing --duration 10 --no-gui`; swap `standing-mpc` or `wbc` for other validated modes.
+- Targeted: from `src/`, `python test_wbc_standing.py`, `python test_inverse_dynamics.py`, etc. Add new tests as `test_<feature>.py`. Optional walking smoke: `WALKING_SMOKE=1 bash scripts/test_all_modes.sh` (Phase 3, expect failures).
 
 ## Coding Style & Naming Conventions
-- Python 3; follow PEP 8 with 4-space indents, snake_case functions/variables, CapWords classes.
-- Use type hints and docstrings for new public functions; keep controller modules named `*_controller.py` and diagnostics under `src/diagnostics/`.
-- Keep configs in YAML, not constants; avoid magic numbers for base height or gains.
+- Python 3 with 4-space indentation; add type hints and brief docstrings for control assumptions or constraints.
+- Use `snake_case` for modules/functions/variables, `CamelCase` for classes, `UPPER_SNAKE_CASE` for constants. Follow joint names (`leg_l1_joint` … `leg_r5_joint`) and config keys from `default_config.yaml`.
+- Keep modes explicit in flags (`--mode standing-mpc`, `--no-gui`) and preserve existing CLI patterns when adding options.
 
 ## Testing Guidelines
-- Default gate is `scripts/test_all_modes.sh --no-gui`; capture Roll/Pitch output for standing modes as a regression check.
-- Keep new diagnostics short (<10s) and place them in `src/diagnostics/` with a brief README note.
-- For new modes, provide a minimal command to run them and document expected stable ranges.
+- Regression bar: `scripts/test_all_modes.sh` must stay green for standing/standing-mpc/wbc; walking can be experimental but must not regress stable modes.
+- Prefer headless runs (`--no-gui`) in CI-like checks; include expected Roll/Pitch snippets in PRs when control logic changes.
+- Add a nearby `test_<feature>.py`; for dynamics, extend Phase 1/2 tests instead of creating ad hoc scripts.
 
 ## Commit & Pull Request Guidelines
-- Commits: short, imperative summaries with scope and rationale (e.g., `Fix URDF visualization issue: decimate meshes`). Group related changes.
-- PRs: include description, commands run, observed outputs (Roll/Pitch or distance), and known limitations. Link issues/tasks and call out config/URDF edits explicitly.
-- Run `test_all_modes.sh` before merging; highlight any intentional failures.
+- Mirror existing log style: short, imperative, with context (e.g., “Add active balance control (hip + ankle feedback)”, “Phase 3 M4.2: Gait Parameter Tuning & Diagnostics”).
+- PRs should state scope (mode/phase touched), config changes (notably `config/default_config.yaml`), tests run with output snippets, and GUI evidence if behavior is visual.
+- Call out any change to critical constants (e.g., base height) and justify it.
 
-## Configuration & Safety Notes
-- Do not alter critical stability constants (notably base height) without benchmarks; record before/after values when you do.
-- Keep meshes/assets lightweight to avoid slow docker rebuilds.
-- Avoid committing local secrets or display settings; prefer environment variables passed through docker-compose.
+## Simulation Safety & Configuration Tips
+- Maintain the canonical base height `0.679` m and straight-leg standing pose; changing either requires recalculating stability metrics.
+- Adjust parameters in `config/default_config.yaml` instead of hardcoding; document new keys briefly in comments or PR notes.
+- Use `scripts/run_simulation.sh` or Docker wrappers to keep working directories and asset paths consistent.

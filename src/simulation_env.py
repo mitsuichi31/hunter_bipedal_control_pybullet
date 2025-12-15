@@ -43,8 +43,13 @@ class HunterSimulation:
         # Simulation state
         self.time = 0.0
 
-    def connect(self):
-        """Connect to PyBullet physics engine"""
+    def connect(self, enable_stable_contacts: bool = False):
+        """
+        Connect to PyBullet physics engine
+
+        Args:
+            enable_stable_contacts: If True, use enhanced contact solver settings for torque control stability
+        """
         if self.use_gui:
             self.physics_client = p.connect(p.GUI)
         else:
@@ -58,6 +63,40 @@ class HunterSimulation:
             p.setRealTimeSimulation(1)
         else:
             p.setRealTimeSimulation(0)
+
+        # Enhanced contact solver settings for torque control stability
+        if enable_stable_contacts:
+            print("Enabling enhanced contact solver settings for torque control...")
+
+            # Increase solver iterations for better constraint accuracy
+            # Default is 50, increase to 150-300 for torque control
+            p.setPhysicsEngineParameter(numSolverIterations=200)
+
+            # Add substeps for smoother contact resolution
+            # Effectively increases simulation rate without changing control timestep
+            p.setPhysicsEngineParameter(numSubSteps=4)
+
+            # Prevent premature contact breaking
+            # Default is 0.02m, reduce to keep contacts more stable
+            p.setPhysicsEngineParameter(contactBreakingThreshold=0.001)
+
+            # ERP (Error Reduction Parameter) - how aggressively to fix constraint violations
+            # Default ~0.2, lower values are more stable but less accurate
+            p.setPhysicsEngineParameter(erp=0.1)
+
+            # Contact-specific ERP - separate from joint constraints
+            # Lower for softer, more stable contacts
+            p.setPhysicsEngineParameter(contactERP=0.05)
+
+            # Enable friction anchors - helps prevent foot sliding
+            p.setPhysicsEngineParameter(enableConeFriction=1)
+
+            print("  numSolverIterations: 200 (default: 50)")
+            print("  numSubSteps: 4 (default: 1)")
+            print("  contactBreakingThreshold: 0.001m (default: 0.02m)")
+            print("  erp: 0.1 (default: ~0.2)")
+            print("  contactERP: 0.05")
+            print("  enableConeFriction: 1")
 
         print(f"Connected to PyBullet (GUI: {self.use_gui})")
 
@@ -87,6 +126,66 @@ class HunterSimulation:
         print(f"Loaded robot from {self.urdf_path}")
         print(f"Total joints: {p.getNumJoints(self.robot_id)}")
         print(f"Controllable joints: {len(self.controllable_joints)}")
+
+    def set_contact_properties(self, lateral_friction: float = 1.0,
+                               spinning_friction: float = 0.1,
+                               rolling_friction: float = 0.01,
+                               restitution: float = 0.0):
+        """
+        Set contact properties for robot feet
+
+        Args:
+            lateral_friction: Friction coefficient for sliding (default 1.0)
+            spinning_friction: Friction for spinning motion (default 0.1)
+            rolling_friction: Friction for rolling motion (default 0.01)
+            restitution: Bounciness, 0=no bounce, 1=perfect bounce (default 0.0)
+        """
+        # Find foot links (leg_l5 and leg_r5 links)
+        foot_links = []
+        num_joints = p.getNumJoints(self.robot_id)
+        for i in range(num_joints):
+            joint_info = p.getJointInfo(self.robot_id, i)
+            link_name = joint_info[12].decode('utf-8')
+            if 'foot' in link_name.lower() or 'l5' in link_name or 'r5' in link_name:
+                foot_links.append(i)
+
+        if len(foot_links) == 0:
+            print("Warning: No foot links found for contact property setting")
+            return
+
+        print(f"Setting contact properties for {len(foot_links)} foot links:")
+        print(f"  lateral_friction={lateral_friction}")
+        print(f"  spinning_friction={spinning_friction}")
+        print(f"  rolling_friction={rolling_friction}")
+        print(f"  restitution={restitution}")
+
+        for link_idx in foot_links:
+            # Set contact properties for this link
+            p.changeDynamics(
+                self.robot_id,
+                link_idx,
+                lateralFriction=lateral_friction,
+                spinningFriction=spinning_friction,
+                rollingFriction=rolling_friction,
+                restitution=restitution,
+                contactStiffness=1e4,  # High stiffness for rigid contact
+                contactDamping=1e3     # High damping for stable contact
+            )
+
+            joint_info = p.getJointInfo(self.robot_id, link_idx)
+            link_name = joint_info[12].decode('utf-8')
+            print(f"    Link {link_idx} ({link_name}): properties set")
+
+        # Also set ground plane properties
+        p.changeDynamics(
+            self.plane_id,
+            -1,  # Base link
+            lateralFriction=lateral_friction,
+            spinningFriction=spinning_friction,
+            rollingFriction=rolling_friction,
+            restitution=restitution
+        )
+        print(f"    Ground plane: properties set")
 
     def _build_joint_info(self):
         """Build joint information dictionaries"""
@@ -261,6 +360,52 @@ class HunterSimulation:
     def get_contact_points(self) -> List:
         """Get contact points on the robot"""
         return p.getContactPoints(bodyA=self.robot_id)
+
+    def apply_external_force(self, force: List[float], position: Optional[List[float]] = None,
+                            link_index: int = -1, flags: int = p.WORLD_FRAME):
+        """
+        Apply external force to the robot (for disturbance/push testing)
+
+        Args:
+            force: Force vector [fx, fy, fz] in Newtons
+            position: Position to apply force (default: center of mass of link)
+            link_index: Link index to apply force to (-1 for base link)
+            flags: Reference frame (p.WORLD_FRAME or p.LINK_FRAME)
+        """
+        if position is None:
+            # Apply at center of mass of the link
+            p.applyExternalForce(
+                objectUniqueId=self.robot_id,
+                linkIndex=link_index,
+                forceObj=force,
+                posObj=[0, 0, 0],  # At COM
+                flags=p.LINK_FRAME
+            )
+        else:
+            p.applyExternalForce(
+                objectUniqueId=self.robot_id,
+                linkIndex=link_index,
+                forceObj=force,
+                posObj=position,
+                flags=flags
+            )
+
+    def apply_external_torque(self, torque: List[float], link_index: int = -1,
+                             flags: int = p.WORLD_FRAME):
+        """
+        Apply external torque to the robot
+
+        Args:
+            torque: Torque vector [tx, ty, tz] in N·m
+            link_index: Link index to apply torque to (-1 for base link)
+            flags: Reference frame (p.WORLD_FRAME or p.LINK_FRAME)
+        """
+        p.applyExternalTorque(
+            objectUniqueId=self.robot_id,
+            linkIndex=link_index,
+            torqueObj=torque,
+            flags=flags
+        )
 
     def disconnect(self):
         """Disconnect from PyBullet"""

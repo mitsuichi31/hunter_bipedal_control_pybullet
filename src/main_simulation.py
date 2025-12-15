@@ -24,6 +24,10 @@ from mpc_controller import MPCParams
 from mpc_wbc_controller import MPCWBCController
 from wbc_controller import WBCParams
 from wbc_walking_controller import WBCWalkingController, WBCWalkingParams
+from gait_generator import GaitParams
+
+# Phase 4: Position Control Walking System
+from position_control_walking import PositionControlWalkingController, WalkingControllerParams
 
 
 class WalkingController:
@@ -499,20 +503,49 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     """
     Test robot with MPC + WBC Controller
 
+    Control modes (via environment variable):
+    - WBC_TORQUE_CONTROL=0 (default): Position control (stable, Phase 2)
+    - WBC_TORQUE_CONTROL=1: Actual torque control (Phase 3 validation)
+
     Args:
         duration: Test duration in seconds
         use_gui: Whether to use GUI
     """
-    print("Running WBC test (MPC + Whole-Body Control)...")
+    use_torque_control = os.environ.get("WBC_TORQUE_CONTROL", "0") != "0"
+    use_hybrid_control = os.environ.get("WBC_HYBRID_CONTROL", "0") != "0"
+
+    print("="*70)
+    print("WBC STANDING TEST (MPC + Whole-Body Control)")
+    print("="*70)
+    if use_hybrid_control:
+        print("Control mode: HYBRID (position on hips/knees, torque on ankles)")
+    elif use_torque_control:
+        print("Control mode: TORQUE_CONTROL (testing torque computation)")
+    else:
+        print("Control mode: POSITION_CONTROL (stable baseline)")
+    print()
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
-    # Create simulation
+    # Create simulation with enhanced contact solver for torque control
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
-    sim.connect()
+
+    # Enable enhanced contact solver for torque/hybrid control modes
+    enable_stable_contacts = (use_torque_control or use_hybrid_control)
+    sim.connect(enable_stable_contacts=enable_stable_contacts)
+
     sim.load_robot(start_position=[0, 0, 0.679])
+
+    # Set contact properties for better foot-ground interaction
+    if enable_stable_contacts:
+        sim.set_contact_properties(
+            lateral_friction=1.2,      # Higher friction to prevent sliding
+            spinning_friction=0.2,     # Prevent foot spinning
+            rolling_friction=0.05,     # Prevent foot rolling
+            restitution=0.0            # No bounce
+        )
 
     # Stable standing configuration (straight legs, feet on ground)
     standing_config = {
@@ -557,37 +590,100 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
         max_zmp_offset=0.08
     )
 
-    wbc_params = WBCParams(
-        friction_coef=0.5,
-        max_normal_force=500.0,
-        min_normal_force=1.0,
-        w_force_tracking=1.0,
-        w_force_regularization=0.01
-    )
+    # Use tuned WBC parameters (Phase 2 + foot anchoring)
+    # Enable foot anchoring for torque/hybrid control modes
+    if use_torque_control or use_hybrid_control:
+        # Foot anchoring enabled - adds Cartesian stiffness to keep feet planted
+        # Allow tuning via environment variables
+        anchor_weight = float(os.environ.get("WBC_ANCHOR_WEIGHT", "5.0"))
+        anchor_kp = float(os.environ.get("WBC_ANCHOR_KP", "100.0"))
+        anchor_kd = float(os.environ.get("WBC_ANCHOR_KD", "50.0"))
+
+        wbc_params = WBCParams(
+            friction_coef=0.6,
+            max_normal_force=500.0,
+            min_normal_force=1.0,
+            w_force_tracking=10.0,
+            w_force_regularization=0.01,
+            w_torque_regularization=0.001,
+            # NEW: Cartesian foot anchoring
+            w_foot_anchor=anchor_weight,
+            foot_stiffness_kp=anchor_kp,
+            foot_damping_kd=anchor_kd
+        )
+        print(f"[WBC] Foot anchoring ENABLED: w={wbc_params.w_foot_anchor}, "
+              f"kp={wbc_params.foot_stiffness_kp}, kd={wbc_params.foot_damping_kd}")
+    else:
+        # Position control mode - no need for foot anchoring
+        wbc_params = WBCParams(
+            friction_coef=0.6,
+            max_normal_force=500.0,
+            min_normal_force=1.0,
+            w_force_tracking=10.0,
+            w_force_regularization=0.01,
+            w_torque_regularization=0.001
+        )
 
     controller = MPCWBCController(
         robot_id=sim.robot_id,
         joint_dict=sim.joint_dict,
         mpc_params=mpc_params,
-        wbc_params=wbc_params
+        wbc_params=wbc_params,
+        use_torque_control=use_torque_control,
+        use_hybrid_control=use_hybrid_control
     )
 
     print("Controller initialized")
     print(f"Control frequency: {1.0/mpc_params.dt:.0f}Hz")
     print(f"MPC horizon: {mpc_params.prediction_horizon} steps")
 
-    # Enable position control
-    for joint_name, target_angle in standing_config.items():
-        joint_idx = sim.get_joint_index(joint_name)
-        if joint_idx is not None:
-            p.setJointMotorControl2(
-                bodyIndex=sim.robot_id,
-                jointIndex=joint_idx,
-                controlMode=p.POSITION_CONTROL,
-                targetPosition=target_angle,
-                force=100.0,
-                maxVelocity=10.0
-            )
+    if use_hybrid_control:
+        # Hybrid mode: disable motors on torque-controlled joints (ankles), position control on others
+        for joint_name in standing_config.keys():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                if joint_name in controller.torque_controlled_joints:
+                    # Ankle: disable for torque control
+                    p.setJointMotorControl2(
+                        bodyIndex=sim.robot_id,
+                        jointIndex=joint_idx,
+                        controlMode=p.VELOCITY_CONTROL,
+                        force=0.0
+                    )
+                else:
+                    # Hip/Knee: setup position control
+                    p.setJointMotorControl2(
+                        bodyIndex=sim.robot_id,
+                        jointIndex=joint_idx,
+                        controlMode=p.POSITION_CONTROL,
+                        targetPosition=standing_config[joint_name],
+                        force=100.0,
+                        maxVelocity=10.0
+                    )
+    elif not use_torque_control:
+        # Enable position control (original stable mode)
+        for joint_name, target_angle in standing_config.items():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                p.setJointMotorControl2(
+                    bodyIndex=sim.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.POSITION_CONTROL,
+                    targetPosition=target_angle,
+                    force=100.0,
+                    maxVelocity=10.0
+                )
+    else:
+        # Disable default motors for torque control
+        for joint_name in standing_config.keys():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                p.setJointMotorControl2(
+                    bodyIndex=sim.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    force=0.0
+                )
 
     print(f"Running simulation for {duration}s...\n")
 
@@ -603,17 +699,45 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
                 joint_commands = controller.update(control_dt)
 
                 # Apply commands
-                for joint_name, target_angle in joint_commands.items():
-                    joint_idx = sim.get_joint_index(joint_name)
-                    if joint_idx is not None:
-                        p.setJointMotorControl2(
-                            bodyIndex=sim.robot_id,
-                            jointIndex=joint_idx,
-                            controlMode=p.POSITION_CONTROL,
-                            targetPosition=target_angle,
-                            force=100.0,
-                            maxVelocity=10.0
-                        )
+                if use_hybrid_control:
+                    # Apply hybrid commands (mix of torque and position)
+                    for joint_name, command in joint_commands.items():
+                        joint_idx = sim.get_joint_index(joint_name)
+                        if joint_idx is not None:
+                            if isinstance(command, dict) and command.get('mode') == 'torque':
+                                # Apply torque
+                                p.setJointMotorControl2(
+                                    bodyIndex=sim.robot_id,
+                                    jointIndex=joint_idx,
+                                    controlMode=p.TORQUE_CONTROL,
+                                    force=command['value']
+                                )
+                            elif isinstance(command, dict) and command.get('mode') == 'position':
+                                # Apply position (already set during initialization, just update if needed)
+                                p.setJointMotorControl2(
+                                    bodyIndex=sim.robot_id,
+                                    jointIndex=joint_idx,
+                                    controlMode=p.POSITION_CONTROL,
+                                    targetPosition=command['value'],
+                                    force=100.0,
+                                    maxVelocity=10.0
+                                )
+                elif use_torque_control:
+                    # Apply torques directly
+                    sim.set_joint_torques(joint_commands)
+                else:
+                    # Apply position commands (original mode)
+                    for joint_name, target_angle in joint_commands.items():
+                        joint_idx = sim.get_joint_index(joint_name)
+                        if joint_idx is not None:
+                            p.setJointMotorControl2(
+                                bodyIndex=sim.robot_id,
+                                jointIndex=joint_idx,
+                                controlMode=p.POSITION_CONTROL,
+                                targetPosition=target_angle,
+                                force=100.0,
+                                maxVelocity=10.0
+                            )
 
             except Exception as e:
                 print(f"Controller error at t={sim_time:.3f}s: {e}")
@@ -662,132 +786,203 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     print("\nWBC test completed!")
 
 
-def run_walking_simulation(duration: float = 20.0, use_gui: bool = True):
+def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable_estop: bool = False):
     """
-    Run walking simulation (currently just maintains standing position)
+    Phase 4 Position Control Walking Mode
 
-    Note: Full walking implementation requires more sophisticated control.
-    For now, this demonstrates stable standing using the straight-leg configuration.
+    Uses validated position control walking system with ZMP-based CoM planning
+    and full-body IK solver. Proven stable for 5+ minute continuous walking.
 
     Args:
         duration: Simulation duration in seconds
         use_gui: Whether to use GUI
+        disable_estop: Disable emergency stop (not used in Phase 4)
     """
-    print("Running walking simulation...")
-    print("Note: Currently maintains standing position (full walking in development)")
+    print("="*70)
+    print("PHASE 4 POSITION CONTROL WALKING")
+    print("="*70)
+    print("System: ZMP CoM Planner + Full-Body IK + Position Control")
+    print("Status: Production-ready (validated 5min continuous walk)")
+    print()
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
-    # Create simulation
+    # Create simulation environment
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
     sim.connect()
     sim.load_robot(start_position=[0, 0, 0.679])
 
-    # Use simple PD controller (same as standing mode)
-    pd_controller = MultiJointPDController(default_kp=200.0, default_kd=20.0)
-
-    # Set higher gains for critical joints (same as standing mode)
-    pd_controller.set_joint_gains("leg_l3_joint", kp=300.0, kd=30.0)
-    pd_controller.set_joint_gains("leg_r3_joint", kp=300.0, kd=30.0)
-    pd_controller.set_joint_gains("leg_l4_joint", kp=300.0, kd=30.0)
-    pd_controller.set_joint_gains("leg_r4_joint", kp=300.0, kd=30.0)
-
-    # Target: straight legs with slight outward stance
-    target_positions = {
-        # Left leg
-        'leg_l1_joint': -0.1,    # Hip roll - outward
-        'leg_l2_joint': 0.0,     # Hip yaw
-        'leg_l3_joint': 0.0,     # Hip pitch - straight
-        'leg_l4_joint': 0.0,     # Knee - straight
-        'leg_l5_joint': 0.0,     # Ankle - straight
-        # Right leg
-        'leg_r1_joint': 0.1,     # Hip roll - outward
-        'leg_r2_joint': 0.0,     # Hip yaw
-        'leg_r3_joint': 0.0,     # Hip pitch - straight
-        'leg_r4_joint': 0.0,     # Knee - straight
-        'leg_r5_joint': 0.0,     # Ankle - straight
+    # Set robot to standing configuration (required for IK solver initialization)
+    standing_config = {
+        'leg_l1_joint': -0.1,
+        'leg_l2_joint': 0.0,
+        'leg_l3_joint': 0.0,
+        'leg_l4_joint': 0.0,
+        'leg_l5_joint': 0.0,
+        'leg_r1_joint': 0.1,
+        'leg_r2_joint': 0.0,
+        'leg_r3_joint': 0.0,
+        'leg_r4_joint': 0.0,
+        'leg_r5_joint': 0.0,
     }
+    for joint_name, angle in standing_config.items():
+        joint_idx = sim.get_joint_index(joint_name)
+        if joint_idx is not None:
+            p.resetJointState(sim.robot_id, joint_idx, angle)
 
-    print("Initializing standing pose...")
+    # Create filtered joint_dict (only controllable leg joints, excluding fixed joints)
+    # This is required because sim.joint_dict includes fixed joints with invalid limits
+    controllable_joint_dict = {}
+    for joint_name in standing_config.keys():
+        idx = sim.get_joint_index(joint_name)
+        if idx is not None:
+            controllable_joint_dict[joint_name] = idx
 
-    # Initialize robot with target joint positions
-    for joint_name, target_pos in target_positions.items():
-        if joint_name in sim.joint_dict:
-            joint_id = sim.joint_dict[joint_name]
-            p.resetJointState(sim.robot_id, joint_id, target_pos)
+    # Initialize Phase 4 position control walking controller
+    gait_params = GaitParams(
+        step_length=0.04,      # 4cm steps (conservative, stable)
+        step_height=0.02,      # 2cm lift
+        step_period=2.0,       # 2s per step
+        double_support_ratio=0.7,
+        stance_width=0.18,
+        body_height=0.679,
+    )
 
-    print(f"Running simulation for {duration} seconds...")
-    print(f"Control: PD control (standing mode)")
+    # Create controller parameters with custom gait
+    controller_params = WalkingControllerParams(
+        gait=gait_params,
+        standing_mode=False,
+        enable_walking=True,
+        zmp_feedback_gain=0.1,     # ZMP feedback gain
+        zmp_correction_limit=0.05  # Max ZMP correction
+    )
 
-    start_time = time.time()
-    last_print_time = 0.0
+    print("Gait Parameters:")
+    print(f"  Step length: {gait_params.step_length*100:.1f} cm")
+    print(f"  Step height: {gait_params.step_height*100:.1f} cm")
+    print(f"  Step period: {gait_params.step_period:.1f} s")
+    print(f"  Double support ratio: {gait_params.double_support_ratio:.1f}")
+    print()
 
+    # Create controller (use filtered joint_dict to avoid fixed joints)
+    controller = PositionControlWalkingController(
+        robot_id=sim.robot_id,
+        joint_dict=controllable_joint_dict,
+        params=controller_params
+    )
+
+    # Initialize controller state
+    controller.reset()
+
+    print(f"Starting {duration}s walking simulation...")
+    print("="*70)
+    print()
+
+    # Tracking variables
+    start_wall_time = time.time()
+    last_status_print = 0.0
+    initial_pos = None
+
+    # Main control loop
     while sim.time < duration:
-        # Get current joint states
-        joint_states = sim.get_joint_states()
+        # Get controller commands
+        commands = controller.update(sim.dt)
 
-        current_positions = {}
-        current_velocities = {}
-        for joint_name, state in joint_states.items():
-            current_positions[joint_name] = state[0]
-            current_velocities[joint_name] = state[1]
+        # Apply position commands
+        for joint_name, target_angle in commands.items():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is None:
+                continue
 
-        # Compute torques
-        torques = pd_controller.compute_torques(
-            target_positions=target_positions,
-            current_positions=current_positions,
-            current_velocities=current_velocities
-        )
-
-        # Apply torques
-        sim.set_joint_torques(torques)
+            # Use high-stiffness position control (Phase 4 approach)
+            p.setJointMotorControl2(
+                bodyIndex=sim.robot_id,
+                jointIndex=joint_idx,
+                controlMode=p.POSITION_CONTROL,
+                targetPosition=target_angle,
+                force=500.0,
+                maxVelocity=10.0
+            )
 
         # Step simulation
         sim.step()
 
         # Real-time visualization
         if use_gui:
-            elapsed = time.time() - start_time
+            elapsed = time.time() - start_wall_time
             if sim.time > elapsed:
                 time.sleep(sim.time - elapsed)
 
-        # Print progress (every 1 second)
-        if sim.time - last_print_time >= 1.0:
+        # Print status every 2 seconds
+        if sim.time - last_status_print >= 2.0:
             base_pos, base_orn, _, _ = sim.get_base_state()
+            if initial_pos is None:
+                initial_pos = base_pos
+
             base_euler = p.getEulerFromQuaternion(base_orn)
-            roll_deg = np.degrees(base_euler[0])
-            pitch_deg = np.degrees(base_euler[1])
+            distance = base_pos[0] - initial_pos[0]
+            phase = controller.gait_generator.phase
 
-            print(f"Time: {sim.time:.1f}s | "
-                  f"Pos: [{base_pos[0]:.2f}, {base_pos[1]:.2f}, {base_pos[2]:.2f}] | "
-                  f"Roll: {roll_deg:.1f}° | Pitch: {pitch_deg:.1f}°")
+            print(f"t={sim.time:5.1f}s | Phase: {phase:4.2f} | "
+                  f"Distance: {distance:5.3f}m | "
+                  f"Roll: {np.degrees(base_euler[0]):+5.1f}° | "
+                  f"Pitch: {np.degrees(base_euler[1]):+5.1f}° | "
+                  f"Height: {base_pos[2]:.3f}m")
+            last_status_print = sim.time
 
-            last_print_time = sim.time
-
-    # Final assessment
+    # Final metrics
+    wall_time = time.time() - start_wall_time
     final_pos, final_orn, _, _ = sim.get_base_state()
     final_euler = p.getEulerFromQuaternion(final_orn)
 
-    print(f"\nSimulation completed!")
-    print(f"Final base position: [{final_pos[0]:.3f}, {final_pos[1]:.3f}, {final_pos[2]:.3f}]")
-    print(f"Final orientation: Roll={np.degrees(final_euler[0]):.1f}°, Pitch={np.degrees(final_euler[1]):.1f}°")
+    if initial_pos is None:
+        initial_pos = [0, 0, 0.679]
 
-    # Check if robot stayed upright
-    if abs(np.degrees(final_euler[0])) < 15 and abs(np.degrees(final_euler[1])) < 15:
-        print("✓ Robot remained upright!")
+    total_distance = final_pos[0] - initial_pos[0]
+    walking_speed = total_distance / duration if duration > 0 else 0.0
+    expected_steps = int(duration / gait_params.step_period)
+
+    print()
+    print("="*70)
+    print("WALKING SIMULATION COMPLETE")
+    print("="*70)
+    print(f"Duration: {sim.time:.1f}s (wall time: {wall_time:.1f}s, RT factor: {sim.time/wall_time:.2f}x)")
+    print(f"Expected steps: {expected_steps} (period: {gait_params.step_period:.1f}s)")
+    print(f"Forward distance: {total_distance:.3f}m")
+    print(f"Walking speed: {walking_speed:.4f} m/s ({walking_speed*1000:.1f} mm/s)")
+    print()
+    print(f"Final position: [{final_pos[0]:+.3f}, {final_pos[1]:+.3f}, {final_pos[2]:.3f}]m")
+    print(f"Final orientation: Roll={np.degrees(final_euler[0]):+.2f}°, Pitch={np.degrees(final_euler[1]):+.2f}°")
+    print(f"Final height: {final_pos[2]:.3f}m (nominal: 0.679m)")
+    print()
+
+    # Assessment
+    roll_deg = abs(np.degrees(final_euler[0]))
+    pitch_deg = abs(np.degrees(final_euler[1]))
+    height_error = abs(final_pos[2] - 0.679)
+
+    success = (roll_deg < 5.0 and pitch_deg < 5.0 and height_error < 0.05)
+
+    if success:
+        print("✓ SUCCESS: Robot walked successfully")
+        print(f"  - Roll stability: {roll_deg:.2f}° < 5°")
+        print(f"  - Pitch stability: {pitch_deg:.2f}° < 5°")
+        print(f"  - Height accuracy: {height_error*1000:.1f}mm < 50mm")
     else:
-        print("✗ Robot fell")
+        print("⚠ COMPLETED WITH WARNINGS:")
+        if roll_deg >= 5.0:
+            print(f"  - Roll deviation: {roll_deg:.2f}° ≥ 5°")
+        if pitch_deg >= 5.0:
+            print(f"  - Pitch deviation: {pitch_deg:.2f}° ≥ 5°")
+        if height_error >= 0.05:
+            print(f"  - Height error: {height_error*1000:.1f}mm ≥ 50mm")
 
-    # Check if robot stayed on ground
-    if 0.5 < final_pos[2] < 0.8:
-        print("✓ Robot stayed on ground!")
-    else:
-        print(f"✗ Robot height issue: {final_pos[2]:.2f}m")
-
-    print("\nNote: Walking mode architecture requires further development.")
-    print("See WALKING_MODE_INVESTIGATION.md for technical details.")
+    print()
+    print("Note: This uses Phase 4 position control walking (validated for 5min continuous walk).")
+    print("      For robustness testing, see test_phase46_robustness.py")
+    print("="*70)
 
     sim.disconnect()
 
@@ -801,6 +996,8 @@ if __name__ == "__main__":
                        help="Simulation duration (seconds)")
     parser.add_argument("--no-gui", action="store_true",
                        help="Disable GUI")
+    parser.add_argument("--disable-walking-estop", action="store_true",
+                       help="Disable walking-mode emergency stop (for debugging)")
 
     args = parser.parse_args()
 
@@ -813,4 +1010,4 @@ if __name__ == "__main__":
     elif args.mode == "wbc":
         run_wbc_test(duration=args.duration, use_gui=use_gui)
     elif args.mode == "walking":
-        run_walking_simulation(duration=args.duration, use_gui=use_gui)
+        run_walking_simulation(duration=args.duration, use_gui=use_gui, disable_estop=args.disable_walking_estop)

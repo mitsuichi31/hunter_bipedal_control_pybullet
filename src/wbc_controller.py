@@ -17,6 +17,9 @@ from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
 import pybullet as p
 
+from stability_metrics import compute_com
+from inverse_dynamics import InverseDynamics
+
 
 @dataclass
 class WBCParams:
@@ -32,6 +35,11 @@ class WBCParams:
     w_force_tracking: float = 1.0     # Weight for force tracking
     w_force_regularization: float = 0.01  # Weight for force regularization
     w_torque_regularization: float = 0.001  # Weight for torque regularization
+
+    # Cartesian foot stiffness (NEW - for stability)
+    w_foot_anchor: float = 0.0        # Weight for foot position anchoring (0 = disabled)
+    foot_stiffness_kp: float = 100.0  # Cartesian stiffness (N/m)
+    foot_damping_kd: float = 50.0     # Cartesian damping (N·s/m)
 
     # Numerical stability
     epsilon: float = 1e-6
@@ -64,6 +72,9 @@ class WholeBodyController:
         self.num_joints = len(joint_dict)
         self.mass = self._compute_total_mass()
 
+        # Inverse dynamics (Phase 2.2)
+        self.inv_dyn = InverseDynamics(robot_id)
+
     def _compute_total_mass(self) -> float:
         """Compute total robot mass from URDF"""
         total_mass = 0.0
@@ -83,7 +94,9 @@ class WholeBodyController:
     def compute_ground_reaction_forces(self,
                                       desired_base_accel: np.ndarray,
                                       foot_positions: List[np.ndarray],
-                                      foot_contacts: List[bool]) -> np.ndarray:
+                                      foot_contacts: List[bool],
+                                      foot_reference_positions: List[np.ndarray] = None,
+                                      foot_velocities: List[np.ndarray] = None) -> np.ndarray:
         """
         Compute optimal ground reaction forces using QP
 
@@ -91,6 +104,8 @@ class WholeBodyController:
             desired_base_accel: Desired base acceleration [ax, ay, az, alpha_x, alpha_y, alpha_z]
             foot_positions: List of foot positions in world frame
             foot_contacts: List of boolean flags indicating if foot is in contact
+            foot_reference_positions: List of desired foot positions (for anchoring), optional
+            foot_velocities: List of foot velocities (for damping), optional
 
         Returns:
             ground_forces: Nx3 array of ground reaction forces for each foot
@@ -114,24 +129,49 @@ class WholeBodyController:
         A = self._build_contact_jacobian(foot_positions, contact_indices)
 
         # Desired wrench (force + torque) from dynamics
-        # F = m * a_desired
-        gravity = np.array([0, 0, -9.81])
-        desired_force = self.mass * (desired_base_accel[0:3] - gravity)
+        # F = m * a_desired + m * g  (expressed in world frame)
+        gravity_force = np.array([0.0, 0.0, self.mass * 9.81])
+        desired_force = gravity_force + self.mass * desired_base_accel[0:3]
 
-        # For torque, we need to consider moment of inertia
-        # Simplified: assume point mass at CoM
-        com_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
-
-        # Desired torque (simplified - would need proper inertia matrix)
-        desired_torque = desired_base_accel[3:6] * self.mass * 0.1  # Rough approximation
+        # For torque, use CoM-aligned frame (simplified inertia about CoM)
+        com_pos = compute_com(self.robot_id)
+        desired_torque = desired_base_accel[3:6] * (self.mass * 0.05)  # small inertia proxy
 
         desired_wrench = np.concatenate([desired_force, desired_torque])
 
-        # Objective: minimize ||A*f - desired_wrench||^2 + regularization
-        objective = cp.Minimize(
-            self.params.w_force_tracking * cp.sum_squares(A @ f - desired_wrench) +
+        # Build objective function terms
+        objective_terms = [
+            self.params.w_force_tracking * cp.sum_squares(A @ f - desired_wrench),
             self.params.w_force_regularization * cp.sum_squares(f)
-        )
+        ]
+
+        # Add Cartesian foot anchoring term (if enabled and data provided)
+        if (self.params.w_foot_anchor > 0 and
+            foot_reference_positions is not None and
+            foot_velocities is not None):
+
+            # Compute desired anchoring forces for each contact foot
+            f_anchor = np.zeros(num_contact_feet * 3)
+            for i, contact_idx in enumerate(contact_indices):
+                # Position error
+                pos_error = foot_reference_positions[contact_idx] - foot_positions[contact_idx]
+                # Velocity (we want zero velocity for stance feet)
+                vel = foot_velocities[contact_idx]
+
+                # Desired anchoring force: F = kp * pos_error - kd * vel
+                f_desired = (self.params.foot_stiffness_kp * pos_error -
+                            self.params.foot_damping_kd * vel)
+
+                # Store in anchor force vector
+                f_anchor[i*3:(i+1)*3] = f_desired
+
+            # Add anchoring objective term
+            objective_terms.append(
+                self.params.w_foot_anchor * cp.sum_squares(f - f_anchor)
+            )
+
+        # Combine all objective terms
+        objective = cp.Minimize(cp.sum(objective_terms))
 
         # Constraints
         constraints = []
@@ -199,8 +239,8 @@ class WholeBodyController:
         num_contacts = len(contact_indices)
         A = np.zeros((6, 3 * num_contacts))
 
-        # Get CoM position
-        com_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+        # Get accurate CoM position (Phase 1.1)
+        com_pos = compute_com(self.robot_id)
 
         for i, foot_idx in enumerate(contact_indices):
             foot_pos = foot_positions[foot_idx]
@@ -272,6 +312,47 @@ class WholeBodyController:
         # proper Jacobians from PyBullet
         for joint_name in self.joint_dict.keys():
             torques[joint_name] = 0.0
+
+        return torques
+
+    def compute_torques_from_accelerations(self,
+                                          desired_joint_accelerations: Dict[str, float]) -> Dict[str, float]:
+        """
+        Compute joint torques to achieve desired accelerations
+
+        Uses inverse dynamics (Phase 2.2):
+        τ = M(q)q̈ + g(q)
+
+        Args:
+            desired_joint_accelerations: Dictionary of {joint_name: acceleration}
+
+        Returns:
+            torques: Dictionary of {joint_name: torque}
+        """
+        # Get current joint states
+        joint_names = list(self.joint_dict.keys())
+        joint_positions = np.zeros(len(joint_names))
+        joint_velocities = np.zeros(len(joint_names))
+        desired_accels = np.zeros(len(joint_names))
+
+        for i, joint_name in enumerate(joint_names):
+            joint_idx = self.joint_dict[joint_name]
+            state = p.getJointState(self.robot_id, joint_idx)
+            joint_positions[i] = state[0]
+            joint_velocities[i] = state[1]
+            desired_accels[i] = desired_joint_accelerations.get(joint_name, 0.0)
+
+        # Use inverse dynamics
+        torques_array = self.inv_dyn.inverse_dynamics(
+            joint_positions,
+            joint_velocities,
+            desired_accels
+        )
+
+        # Convert to dictionary
+        torques = {}
+        for i, joint_name in enumerate(joint_names):
+            torques[joint_name] = torques_array[i]
 
         return torques
 
