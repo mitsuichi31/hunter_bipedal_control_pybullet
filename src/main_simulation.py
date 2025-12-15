@@ -641,7 +641,10 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
 
     # Physics and safety parameters from config
     physics_params, command_limits = _build_physics_and_limits(task_config)
-    gait_schedule = GaitSchedule.from_config({"gaits": gait_config.gaits, "default": "stance"})
+    gait_default = "stance"
+    if args.gait and args.gait in gait_config.gaits:
+        gait_default = args.gait
+    gait_schedule = GaitSchedule.from_config({"gaits": gait_config.gaits, "default": gait_default})
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -763,7 +766,13 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
         wbc_params=wbc_params,
         use_torque_control=use_torque_control,
         use_hybrid_control=use_hybrid_control,
-        reference_targets=reference_config,
+        reference_targets=ReferenceTargets(
+            com_height=reference_config.com_height,
+            target_displacement_velocity=args.target_velocity
+            if args.target_velocity is not None else reference_config.target_displacement_velocity,
+            target_rotation_velocity=reference_config.target_rotation_velocity,
+            default_joint_state=reference_config.default_joint_state,
+        ),
         centroidal_planner=centroidal_planner,
         gait_schedule=gait_schedule,
     )
@@ -1141,6 +1150,10 @@ if __name__ == "__main__":
                        help="Disable GUI")
     parser.add_argument("--disable-walking-estop", action="store_true",
                        help="Disable walking-mode emergency stop (for debugging)")
+    parser.add_argument("--target-velocity", type=float, default=None,
+                       help="Target forward velocity for MPC/WBC planner (m/s)")
+    parser.add_argument("--gait", type=str, default=None,
+                       help="Gait name for centroidal planner (e.g., stance, trot)")
 
     args = parser.parse_args()
 
