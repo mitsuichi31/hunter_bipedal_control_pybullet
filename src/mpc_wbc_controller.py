@@ -253,6 +253,13 @@ class MPCWBCController:
             force_reference=plan_forces
         )
 
+        if int(self.time * 10) % 20 == 0:  # every ~2s at 100 Hz
+            # Log first foot planned vs solved forces for debugging
+            planned_fz = plan_forces[0][2] if plan_forces else 0.0
+            solved_fz = ground_forces[0][2] if len(ground_forces) > 0 else 0.0
+            total_fz = float(np.sum(ground_forces[:, 2])) if hasattr(ground_forces, "__len__") else 0.0
+            print(f"[WBC Forces] t={self.time:.2f}s | planned_fz={planned_fz:.2f} | solved_fz={solved_fz:.2f} | total_fz={total_fz:.2f} | contacts={foot_contacts} | mass={self.wbc.mass:.2f}")
+
         # 6. Convert forces to joint commands
         if self.use_hybrid_control:
             # Hybrid mode: position control on hips/knees, torque on ankles

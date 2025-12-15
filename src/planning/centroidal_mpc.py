@@ -30,7 +30,7 @@ class CentroidalMPC:
     def __init__(self,
                  config: CentroidalMPCConfig,
                  gait_schedule: Optional[GaitSchedule] = None,
-                 nominal_mass: float = 75.0):
+                 nominal_mass: float = 12.6):
         self.config = config
         self.gait_schedule = gait_schedule
         self.nominal_mass = nominal_mass

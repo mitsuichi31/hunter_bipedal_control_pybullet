@@ -29,6 +29,7 @@ from config_loader import load_gait_config, load_reference_config, load_task_con
 from estimation.observer import Observer
 from planning.centroidal_mpc import CentroidalMPC, CentroidalMPCConfig
 from planning.gait_schedule import GaitSchedule
+from planning.reference_manager import ReferenceTargets
 
 
 def _build_physics_and_limits(task_config):
@@ -650,7 +651,15 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
-    # Create simulation with enhanced contact solver for torque control
+    # Detect requested forward velocity to decide on contact solver stability
+    target_velocity_cmd = None
+    try:
+        # Available when invoked via CLI main
+        target_velocity_cmd = args.target_velocity  # type: ignore
+    except Exception:
+        target_velocity_cmd = None
+
+    # Create simulation with enhanced contact solver for torque control or when commanding forward velocity
     sim = HunterSimulation(
         urdf_path=urdf_path,
         dt=0.001,
@@ -660,7 +669,11 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     )
 
     # Enable enhanced contact solver for torque/hybrid control modes
-    enable_stable_contacts = (use_torque_control or use_hybrid_control)
+    enable_stable_contacts = (
+        use_torque_control
+        or use_hybrid_control
+        or (target_velocity_cmd is not None and abs(target_velocity_cmd) > 1e-6)
+    )
     sim.connect(enable_stable_contacts=enable_stable_contacts)
 
     sim.load_robot(start_position=[0, 0, 0.679])
@@ -757,6 +770,7 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     centroidal_planner = CentroidalMPC(
         centroidal_config,
         gait_schedule=gait_schedule,
+        nominal_mass=12.6,  # Match PyBullet URDF mass (~12.6 kg) to align force references
     )
 
     controller = MPCWBCController(

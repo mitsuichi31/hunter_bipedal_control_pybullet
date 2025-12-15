@@ -29,11 +29,11 @@ class WBCParams:
 
     # Force limits
     max_normal_force: float = 500.0  # Maximum normal force per foot (N)
-    min_normal_force: float = 1.0    # Minimum normal force (N)
+    min_normal_force: float = 0.5    # Minimum normal force (N)
 
     # Weights for QP objective
-    w_force_tracking: float = 1.0     # Weight for force tracking
-    w_force_regularization: float = 0.01  # Weight for force regularization
+    w_force_tracking: float = 25.0     # Weight for force tracking
+    w_force_regularization: float = 0.0001  # Weight for force regularization
     w_torque_regularization: float = 0.001  # Weight for torque regularization
 
     # Cartesian foot stiffness (NEW - for stability)
@@ -206,6 +206,10 @@ class WholeBodyController:
             # Normal force limits
             constraints.append(fz >= self.params.min_normal_force)
             constraints.append(fz <= self.params.max_normal_force)
+
+        # Ensure total normal force supports gravity
+        total_normal = cp.sum([f[i*3 + 2] for i in range(num_contact_feet)])
+        constraints.append(total_normal >= self.mass * 9.81)
 
         # Solve QP
         problem = cp.Problem(objective, constraints)
