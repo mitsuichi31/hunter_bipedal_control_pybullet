@@ -1,0 +1,28 @@
+controller:
+  mpc:
+    dt: 0.01
+    horizon_steps: 15
+    control_horizon: 8
+    weights:
+      position: 10.0
+      velocity: 1.0
+      zmp: 1.0e-6
+
+  wbc:
+    friction_coefficient: 0.7
+    min_normal_force: 1.0
+    max_normal_force: 500.0
+    max_torque: 500.0
+    max_velocity: 15.0
+    weights:
+      base_pose: 1.0
+      base_velocity: 0.5
+      contact_force_tracking: 1.0
+      swing_foot: 0.5
+      joint_regularization: 0.01
+
+  safety:
+    torso_angle_limit_deg: 20.0
+    fallback_pd:
+      kp: 200.0
+      kd: 20.0

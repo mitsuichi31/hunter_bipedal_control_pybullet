@@ -4,8 +4,10 @@ Configuration loader for simulation parameters
 
 import yaml
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from dataclasses import dataclass
 from gait_generator import GaitParams
+from planning.reference_manager import ReferenceTargets
 
 
 class SimulationConfig:
@@ -139,6 +141,59 @@ def get_default_config() -> SimulationConfig:
             },
             'pd_controller': {'default_kp': 200.0, 'default_kd': 20.0}
         })
+
+
+# --- New structured configs for rebuild ---
+
+
+@dataclass
+class GaitConfig:
+    defaults: Dict[str, Any]
+    gaits: Dict[str, Any]
+
+
+@dataclass
+class TaskConfig:
+    mpc: Dict[str, Any]
+    wbc: Dict[str, Any]
+    safety: Dict[str, Any]
+
+
+def load_yaml(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def load_gait_config(config_path: Optional[str] = None) -> GaitConfig:
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = config_path or os.path.join(base, "../config/gait.yaml")
+    cfg = load_yaml(path)
+    return GaitConfig(defaults=cfg.get("defaults", {}), gaits=cfg.get("gaits", {}))
+
+
+def load_reference_config(config_path: Optional[str] = None) -> ReferenceTargets:
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = config_path or os.path.join(base, "../config/reference.yaml")
+    cfg = load_yaml(path).get("reference", {})
+    return ReferenceTargets(
+        com_height=cfg.get("com_height", 0.63),
+        target_displacement_velocity=cfg.get("target_displacement_velocity", 0.0),
+        target_rotation_velocity=cfg.get("target_rotation_velocity", 0.0),
+        default_joint_state=cfg.get("default_joint_state", {}),
+    )
+
+
+def load_task_config(config_path: Optional[str] = None) -> TaskConfig:
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = config_path or os.path.join(base, "../config/task.yaml")
+    cfg = load_yaml(path).get("controller", {})
+    return TaskConfig(
+        mpc=cfg.get("mpc", {}),
+        wbc=cfg.get("wbc", {}),
+        safety=cfg.get("safety", {}),
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,24 @@
+defaults:
+  step_length: 0.08        # meters
+  step_height: 0.04        # meters
+  step_period: 1.2         # seconds
+  stance_width: 0.18       # meters
+  body_height: 0.63        # meters (match ROS reference)
+  double_support_ratio: 0.2
+
+gaits:
+  stance:
+    sequence: [STANCE]
+    switching_times: [0.0, 0.5]
+
+  trot:
+    sequence: [L, R]
+    switching_times: [0.0, 0.3, 0.6]
+
+  standing_trot:
+    sequence: [L, STANCE, R, STANCE]
+    switching_times: [0.0, 0.25, 0.3, 0.55, 0.6]
+
+  flying_trot:
+    sequence: [L, FLY, R, FLY]
+    switching_times: [0.0, 0.15, 0.2, 0.35, 0.4]

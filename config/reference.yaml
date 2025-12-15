@@ -1,0 +1,16 @@
+reference:
+  com_height: 0.63
+  target_displacement_velocity: 0.5   # m/s
+  target_rotation_velocity: 1.57       # rad/s
+
+  default_joint_state:
+    leg_l1_joint: 0.10
+    leg_l2_joint: 0.00
+    leg_l3_joint: 0.40
+    leg_l4_joint: 0.93
+    leg_l5_joint: 0.53
+    leg_r1_joint: -0.10
+    leg_r2_joint: 0.00
+    leg_r3_joint: -0.40
+    leg_r4_joint: 0.93
+    leg_r5_joint: -0.53
