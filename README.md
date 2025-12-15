@@ -111,6 +111,16 @@ PyBulletを使用したHunter 2足歩行ロボットのシミュレーション�
 - **質量ロバスト性**: ±20%の質量変動に対応（再調整不要）
 - **優れた安定性**: ロール<0.3°、ピッチ<3.1°を維持
 
+#### GUI実行時のヒント（MIT-SHM/OpenGLエラー対策）
+
+GUIで`BadValue (MIT-SHM)`や`nouveau`関連のOpenGLエラーが出る場合は、以下の環境変数を付けて実行してください:
+
+```bash
+QT_X11_NO_MITSHM=1 PYBULLET_USE_OPENGL2=1 python3 src/main_simulation.py --mode standing --duration 10
+```
+
+MIT-SHMを無効化し、OpenGL2パスを使うことでPyBullet GUIが安定します。
+
 #### アーキテクチャ
 **純粋位置制御アプローチ**（WBCトルク制御の問題を回避）:
 ```

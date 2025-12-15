@@ -17,6 +17,8 @@ echo "Duration: $DURATION seconds"
 echo "GUI: $GUI"
 echo "Disable E-Stop (walking only): $DISABLE_ESTOP"
 echo "========================================="
+echo "Hint: If GUI fails with MIT-SHM/OpenGL errors, run with 'QT_X11_NO_MITSHM=1 PYBULLET_USE_OPENGL2=1' env vars."
+echo "========================================="
 
 cd /workspace/hunter/src
 
