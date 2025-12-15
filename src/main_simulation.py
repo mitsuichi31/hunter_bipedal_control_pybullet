@@ -216,7 +216,12 @@ def run_standing_test_mpc(duration: float = 10.0, use_gui: bool = True):
     )
     sim.connect(enable_stable_contacts=True)
     sim.load_robot(start_position=[0, 0, 0.679])
-    # Use default PyBullet contact params (previous stable baseline)
+    sim.set_contact_properties(
+        lateral_friction=physics_params.get("lateral_friction", 1.0),
+        spinning_friction=0.2,
+        rolling_friction=0.05,
+        restitution=0.0,
+    )
 
     observer = Observer()
     observer.reset()
