@@ -157,6 +157,11 @@ class MPCWBCController:
                     target_com = planned_com[0][0:2]
                 else:
                     target_com = None
+
+                # Debug: log planner outputs occasionally
+                if int(self.time * 10) % 20 == 0:  # every ~2s at 100 Hz
+                    f0 = plan_forces[0][2] if plan_forces else 0.0
+                    print(f"[CentroidalMPC] t={self.time:.2f}s | plan_com_z={planned_com[0][2]:.3f} | contacts={foot_contacts} | f0_z={f0:.2f}")
             else:
                 target_com = None
         else:
