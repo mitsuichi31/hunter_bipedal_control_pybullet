@@ -143,12 +143,14 @@ class MPCWBCController:
         foot_positions, foot_contacts = self._get_foot_states()
 
         # Optional centroidal planner
+        plan_forces = None
         if self.centroidal_planner:
             plan = self._run_centroidal_planner(com_state, dt)
             if plan is not None:
                 # Override contact flags if available
                 if plan.get("contact_schedule") and len(plan["contact_schedule"]) >= len(foot_contacts):
                     foot_contacts = plan["contact_schedule"][:len(foot_contacts)]
+                plan_forces = plan.get("contact_forces")
                 # Use planned COM reference for tracking
                 planned_com = plan.get("com_trajectory", [])
                 if planned_com:
@@ -242,7 +244,8 @@ class MPCWBCController:
             foot_positions=foot_positions,
             foot_contacts=foot_contacts,
             foot_reference_positions=self.foot_reference_positions,
-            foot_velocities=foot_velocities
+            foot_velocities=foot_velocities,
+            force_reference=plan_forces
         )
 
         # 6. Convert forces to joint commands

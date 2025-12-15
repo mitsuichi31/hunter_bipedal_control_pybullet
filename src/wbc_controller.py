@@ -96,7 +96,8 @@ class WholeBodyController:
                                       foot_positions: List[np.ndarray],
                                       foot_contacts: List[bool],
                                       foot_reference_positions: List[np.ndarray] = None,
-                                      foot_velocities: List[np.ndarray] = None) -> np.ndarray:
+                                      foot_velocities: List[np.ndarray] = None,
+                                      force_reference: Optional[List[np.ndarray]] = None) -> np.ndarray:
         """
         Compute optimal ground reaction forces using QP
 
@@ -106,6 +107,7 @@ class WholeBodyController:
             foot_contacts: List of boolean flags indicating if foot is in contact
             foot_reference_positions: List of desired foot positions (for anchoring), optional
             foot_velocities: List of foot velocities (for damping), optional
+            force_reference: Optional list of desired forces per foot (world frame)
 
         Returns:
             ground_forces: Nx3 array of ground reaction forces for each foot
@@ -144,6 +146,16 @@ class WholeBodyController:
             self.params.w_force_tracking * cp.sum_squares(A @ f - desired_wrench),
             self.params.w_force_regularization * cp.sum_squares(f)
         ]
+
+        # Track planner-provided contact forces if available
+        if force_reference is not None and len(force_reference) == num_feet:
+            f_ref = []
+            for idx in contact_indices:
+                f_ref.extend(list(force_reference[idx]))
+            f_ref_vec = cp.Parameter(num_contact_feet * 3, value=np.array(f_ref))
+            objective_terms.append(
+                self.params.w_force_tracking * cp.sum_squares(f - f_ref_vec)
+            )
 
         # Add Cartesian foot anchoring term (if enabled and data provided)
         if (self.params.w_foot_anchor > 0 and
