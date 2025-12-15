@@ -25,6 +25,8 @@ from mpc_wbc_controller import MPCWBCController
 from wbc_controller import WBCParams
 from wbc_walking_controller import WBCWalkingController, WBCWalkingParams
 from gait_generator import GaitParams
+from com_planner_simple import SimpleCoMPlannerParams
+from full_body_ik import FullBodyIKParams
 from config_loader import load_gait_config, load_reference_config, load_task_config
 from estimation.observer import Observer
 from planning.centroidal_mpc import CentroidalMPC, CentroidalMPCConfig
@@ -999,13 +1001,36 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
         body_height=0.679,
     )
 
+    # Reinforced ZMP/CoM planner to hold nominal height
+    com_planning = SimpleCoMPlannerParams(
+        com_height=0.679,
+        zmp_kp=26.0,   # Higher ZMP stiffness
+        zmp_kd=8.0,    # More damping
+        preview_time=0.5,
+        dt=0.01,
+        velocity_damping=0.98,
+    )
+
+    ik_params = FullBodyIKParams(
+        foot_weight=200.0,        # Track feet more tightly to limit lift drift
+        com_weight=80.0,          # Prioritize CoM tracking
+        orientation_weight=40.0,  # Keep trunk more upright
+        regularization_weight=1.0,
+        com_height=0.679,
+        max_roll_pitch=0.087,     # Stricter upright bound (~5.0 deg)
+        base_height_min=0.67,
+        base_height_max=0.681,
+    )
+
     # Create controller parameters with custom gait
     controller_params = WalkingControllerParams(
         gait=gait_params,
+        com_planning=com_planning,
+        ik=ik_params,
         standing_mode=False,
         enable_walking=True,
-        zmp_feedback_gain=0.1,     # ZMP feedback gain
-        zmp_correction_limit=0.05  # Max ZMP correction
+        zmp_feedback_gain=0.35,     # ZMP feedback gain (stronger to resist sag)
+        zmp_correction_limit=0.10   # Max ZMP correction
     )
 
     print("Gait Parameters:")
@@ -1033,6 +1058,41 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     start_wall_time = time.time()
     last_status_print = 0.0
     initial_pos = None
+
+    def _foot_contact_info(sim_env: HunterSimulation):
+        """Summarize per-foot contact: min contact height and summed normal force."""
+        # Capture contacts where the robot is either bodyA or bodyB
+        contact_points = p.getContactPoints()
+        info = {
+            "left": {"min_z": None, "normal": 0.0},
+            "right": {"min_z": None, "normal": 0.0},
+        }
+        contact_links = set()
+        foot_links = {
+            "left": sim_env.foot_links.get("left", []),
+            "right": sim_env.foot_links.get("right", []),
+        }
+        for cp in contact_points:
+            # Determine if robot is A or B in this contact
+            if cp[1] == sim_env.robot_id:
+                link_idx = cp[3]
+                contact_pos = cp[5] if len(cp) > 5 else None
+            elif cp[2] == sim_env.robot_id:
+                link_idx = cp[4]
+                contact_pos = cp[6] if len(cp) > 6 else None
+            else:
+                continue
+
+            contact_links.add(link_idx)
+            normal_force = cp[9] if len(cp) > 9 else 0.0
+            for side in ("left", "right"):
+                if link_idx in foot_links.get(side, []):
+                    info[side]["normal"] += normal_force
+                    if contact_pos is not None:
+                        z_val = contact_pos[2]
+                        if info[side]["min_z"] is None or z_val < info[side]["min_z"]:
+                            info[side]["min_z"] = z_val
+        return info, sorted(contact_links)
 
     # Main control loop
     while sim.time < duration:
@@ -1076,6 +1136,9 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
         if sim.time - last_status_print >= 2.0:
             base_pos = filtered["base_position"]
             base_orn = raw_obs["base_orientation"]
+            feet = raw_obs.get("foot_positions", {})
+            left_foot = feet.get("left")
+            right_foot = feet.get("right")
             if initial_pos is None:
                 initial_pos = base_pos
 
@@ -1083,11 +1146,25 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
             distance = base_pos[0] - initial_pos[0]
             phase = controller.gait_generator.phase
 
+            contact_info, contact_links = _foot_contact_info(sim)
+
+            def _fmt_foot(label, pos, contact):
+                if pos is None:
+                    return f"{label}(n/a)"
+                min_z = contact["min_z"]
+                normal = contact["normal"]
+                min_z_str = f"{min_z:+.3f}" if min_z is not None else "n/a"
+                return f"{label}(z={pos[2]:.3f},min={min_z_str},N={normal:5.1f})"
+
+            left_tip = _fmt_foot("L", left_foot, contact_info["left"])
+            right_tip = _fmt_foot("R", right_foot, contact_info["right"])
+
             print(f"t={sim.time:5.1f}s | Phase: {phase:4.2f} | "
-                  f"Distance: {distance:5.3f}m | "
+                  f"Dist: {distance:5.3f}m | "
                   f"Roll: {np.degrees(base_euler[0]):+5.1f}° | "
                   f"Pitch: {np.degrees(base_euler[1]):+5.1f}° | "
-                  f"Height: {base_pos[2]:.3f}m")
+                  f"H: {base_pos[2]:.3f}m | Feet: {left_tip} {right_tip} | "
+                  f"contact_links={contact_links}")
             last_status_print = sim.time
 
     # Final metrics

@@ -27,7 +27,7 @@ class FullBodyIKParams:
 
     # Optimization weights
     foot_weight: float = 100.0  # Weight for foot position tracking
-    com_weight: float = 50.0  # Weight for CoM position tracking
+    com_weight: float = 50.0  # Weight for CoM position tracking (XYZ)
     orientation_weight: float = 20.0  # Weight for upright orientation
     regularization_weight: float = 1.0  # Weight for staying close to current config
 
@@ -39,6 +39,8 @@ class FullBodyIKParams:
     # Physical constraints
     com_height: float = 0.689  # Desired CoM height (m)
     max_roll_pitch: float = 0.2  # Maximum roll/pitch deviation (rad, ~11 degrees)
+    base_height_min: float = 0.60  # Bound base height to avoid crouch/loft
+    base_height_max: float = 0.72
 
 
 class FullBodyIKSolver:
@@ -184,19 +186,21 @@ class FullBodyIKSolver:
 
         cost = 0.0
 
-        # Foot position costs (only if in contact)
-        if contacts[0] and 'left_foot' in targets:
+        # Foot position costs (track both stance and swing; swing slightly softer)
+        if 'left_foot' in targets:
             foot_error = np.linalg.norm(left_foot_pos - targets['left_foot'])
-            cost += self.params.foot_weight * foot_error ** 2
+            weight = self.params.foot_weight * (1.0 if contacts[0] else 0.7)
+            cost += weight * foot_error ** 2
 
-        if contacts[1] and 'right_foot' in targets:
+        if 'right_foot' in targets:
             foot_error = np.linalg.norm(right_foot_pos - targets['right_foot'])
-            cost += self.params.foot_weight * foot_error ** 2
+            weight = self.params.foot_weight * (1.0 if contacts[1] else 0.7)
+            cost += weight * foot_error ** 2
 
-        # CoM position cost (XY plane only, Z handled by orientation)
+        # CoM position cost (full XYZ to enforce height)
         if 'com' in targets:
-            com_error_xy = np.linalg.norm(com_pos[:2] - targets['com'][:2])
-            cost += self.params.com_weight * com_error_xy ** 2
+            com_error = np.linalg.norm(com_pos - targets['com'])
+            cost += self.params.com_weight * com_error ** 2
 
         # Orientation cost (penalize roll and pitch)
         _, _, base_euler = self._config_to_state(config)
@@ -257,12 +261,12 @@ class FullBodyIKSolver:
         # Bounds
         bounds = Bounds(
             lb=np.concatenate([
-                [-10, -10, 0.3],  # Base position (x, y, z)
+                [-10, -10, self.params.base_height_min],  # Base position (x, y, z)
                 [-self.params.max_roll_pitch, -self.params.max_roll_pitch, -np.pi],  # Base orientation
                 self.joint_lower_limits  # Joint angles
             ]),
             ub=np.concatenate([
-                [10, 10, 1.0],  # Base position
+                [10, 10, self.params.base_height_max],  # Base position
                 [self.params.max_roll_pitch, self.params.max_roll_pitch, np.pi],  # Base orientation
                 self.joint_upper_limits  # Joint angles
             ])

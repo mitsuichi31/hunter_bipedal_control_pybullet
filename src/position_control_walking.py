@@ -101,6 +101,9 @@ class PositionControlWalkingController:
         self.time = 0.0
         self.last_ik_solution = None
         self.emergency_stop = False
+        self.reference_xy = np.zeros(2)  # Nominal world-frame walking reference
+        self._desired_forward_velocity = 0.0
+        self._next_diag_print = 0.0
 
         # State estimation (CoM)
         self.filtered_com_pos = np.zeros(3)
@@ -123,6 +126,14 @@ class PositionControlWalkingController:
         """Reset controller state"""
         self.time = 0.0
         self.gait_generator.reset()
+
+        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+        self.reference_xy = np.array(base_pos[:2])
+        if self.params.gait.step_period > 1e-6:
+            self._desired_forward_velocity = self.params.gait.step_length / self.params.gait.step_period
+        else:
+            self._desired_forward_velocity = 0.0
+        self._next_diag_print = 0.0
 
         # Reset CoM planner to current state
         com_pos = self._compute_com()
@@ -169,21 +180,31 @@ class PositionControlWalkingController:
         Returns:
             (left_contact, right_contact) booleans
         """
-        # Get foot heights
-        left_foot_state = p.getLinkState(self.robot_id, self.left_foot_link)
-        right_foot_state = p.getLinkState(self.robot_id, self.right_foot_link)
-
-        left_height = left_foot_state[0][2]  # Z position
-        right_height = right_foot_state[0][2]
-
-        # Consider in contact if within 2cm of ground
-        contact_threshold = 0.02
-        left_contact = left_height < contact_threshold
-        right_contact = right_height < contact_threshold
-
         # During standing, both feet always in contact
         if self.params.standing_mode:
             return (True, True)
+
+        # Phase-based contact schedule (aligns with gait generator)
+        phase = self.gait_generator.phase % (2.0 * np.pi)
+        swing_dur = np.pi * max(0.05, 1.0 - self.params.gait.double_support_ratio)
+        swing_start = (np.pi - swing_dur) / 2.0
+        swing_end = swing_start + swing_dur
+
+        def in_stance(leg_phase: float) -> bool:
+            leg_phase = leg_phase % (2.0 * np.pi)
+            return not (swing_start <= leg_phase < swing_end)
+
+        left_contact = in_stance(phase)
+        right_contact = in_stance(phase + np.pi)  # out of phase
+
+        # Height-based override: if a foot is clearly on ground, mark contact
+        contact_threshold = 0.02
+        left_height = p.getLinkState(self.robot_id, self.left_foot_link)[0][2]
+        right_height = p.getLinkState(self.robot_id, self.right_foot_link)[0][2]
+        if left_height < contact_threshold:
+            left_contact = True
+        if right_height < contact_threshold:
+            right_contact = True
 
         return (left_contact, right_contact)
 
@@ -330,6 +351,14 @@ class PositionControlWalkingController:
         # Update time
         self.time += dt
 
+        # Current base state for reference anchoring and diagnostics
+        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+
+        # Advance nominal walking frame using desired forward velocity to avoid
+        # targets chasing instantaneous base drift.
+        if self.params.enable_walking:
+            self.reference_xy[0] += self._desired_forward_velocity * dt
+
         # Update state estimate (CoM) for feedback/planner sync
         com_pos_est, com_vel_est = self._update_state_estimate(dt)
 
@@ -341,13 +370,16 @@ class PositionControlWalkingController:
         self.gait_generator.update(dt)
         left_foot_target, right_foot_target = self.gait_generator.get_foot_trajectories(self.time)
 
-        # Convert to world frame (add current base position offset)
-        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
-        left_foot_target_world = left_foot_target + np.array([base_pos[0], base_pos[1], 0])
-        right_foot_target_world = right_foot_target + np.array([base_pos[0], base_pos[1], 0])
+        # Convert to world frame using nominal walking reference (decoupled from instantaneous base drift)
+        walk_frame = np.array([self.reference_xy[0], self.reference_xy[1], 0.0])
+        left_foot_target_world = left_foot_target + walk_frame
+        right_foot_target_world = right_foot_target + walk_frame
 
         # 2. Determine contact state
         contacts = self._get_contact_state()
+        # Safety fallback: if no contacts detected, assume double support so feet are driven to the ground
+        if not any(contacts):
+            contacts = (True, True)
 
         # 3. Compute desired ZMP
         zmp_desired = self._compute_desired_zmp(left_foot_target_world, right_foot_target_world, contacts)
@@ -360,6 +392,18 @@ class PositionControlWalkingController:
                                  -self.params.zmp_correction_limit,
                                  self.params.zmp_correction_limit)
         zmp_command = zmp_desired + zmp_correction
+
+        # Lightweight diagnostics to debug drift/target alignment
+        if self.time >= self._next_diag_print and self.time <= 15.0:
+            print(
+                "[Walking diag]"
+                f" t={self.time:5.2f}s"
+                f" base=({base_pos[0]:+.3f},{base_pos[1]:+.3f})"
+                f" ref=({self.reference_xy[0]:+.3f},{self.reference_xy[1]:+.3f})"
+                f" foot_x=({left_foot_target_world[0]:+.3f},{right_foot_target_world[0]:+.3f})"
+                f" zmp=({zmp_command[0]:+.3f},{zmp_command[1]:+.3f})"
+            )
+            self._next_diag_print += 1.0
 
         # 4. Plan CoM trajectory to track ZMP (anchor planner state to estimate)
         self.com_planner.planner_x.com_pos = com_pos_est[0]
