@@ -27,6 +27,8 @@ from wbc_walking_controller import WBCWalkingController, WBCWalkingParams
 from gait_generator import GaitParams
 from config_loader import load_gait_config, load_reference_config, load_task_config
 from estimation.observer import Observer
+from planning.centroidal_mpc import CentroidalMPC, CentroidalMPCConfig
+from planning.gait_schedule import GaitSchedule
 
 
 def _build_physics_and_limits(task_config):
@@ -634,10 +636,12 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     # Load structured configs
     task_config = load_task_config()
     reference_config = load_reference_config()
+    gait_config = load_gait_config()
     wbc_cfg = task_config.wbc
 
     # Physics and safety parameters from config
     physics_params, command_limits = _build_physics_and_limits(task_config)
+    gait_schedule = GaitSchedule.from_config({"gaits": gait_config.gaits, "default": "stance"})
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -741,13 +745,27 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
         # Position control mode - no need for foot anchoring
         wbc_params = WBCParams(**base_wbc_params)
 
+    centroidal_config = CentroidalMPCConfig(
+        dt=mpc_cfg.get("dt", 0.03),
+        horizon_steps=mpc_cfg.get("horizon_steps", 20),
+        control_horizon=mpc_cfg.get("control_horizon", 10),
+        weights=mpc_cfg.get("weights", {}),
+    )
+    centroidal_planner = CentroidalMPC(
+        centroidal_config,
+        gait_schedule=gait_schedule,
+    )
+
     controller = MPCWBCController(
         robot_id=sim.robot_id,
         joint_dict=sim.joint_dict,
         mpc_params=mpc_params,
         wbc_params=wbc_params,
         use_torque_control=use_torque_control,
-        use_hybrid_control=use_hybrid_control
+        use_hybrid_control=use_hybrid_control,
+        reference_targets=reference_config,
+        centroidal_planner=centroidal_planner,
+        gait_schedule=gait_schedule,
     )
 
     print("Controller initialized")

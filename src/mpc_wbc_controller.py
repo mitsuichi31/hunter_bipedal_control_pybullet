@@ -22,6 +22,9 @@ from wbc_tasks import (
 )
 from stability_metrics import compute_com, compute_com_velocity
 from inverse_dynamics import InverseDynamics
+from planning.centroidal_mpc import CentroidalMPC
+from planning.gait_schedule import GaitSchedule
+from planning.reference_manager import ReferenceTargets
 
 
 class MPCWBCController:
@@ -41,7 +44,10 @@ class MPCWBCController:
                  mpc_params: MPCParams = None,
                  wbc_params: WBCParams = None,
                  use_torque_control: bool = False,
-                 use_hybrid_control: bool = False):
+                 use_hybrid_control: bool = False,
+                 reference_targets: Optional[ReferenceTargets] = None,
+                 centroidal_planner: Optional[CentroidalMPC] = None,
+                 gait_schedule: Optional[GaitSchedule] = None):
         """
         Initialize integrated controller
 
@@ -52,11 +58,17 @@ class MPCWBCController:
             wbc_params: WBC parameters
             use_torque_control: If True, compute actual torques; if False, use position control
             use_hybrid_control: If True, use position control on hips/knees, torque on ankles
+            reference_targets: Desired COM height/velocities from config
+            centroidal_planner: Optional centroidal MPC planner (planning/centroidal_mpc.py)
+            gait_schedule: Optional gait schedule to drive contact sequence
         """
         self.robot_id = robot_id
         self.joint_dict = joint_dict
         self.use_torque_control = use_torque_control
         self.use_hybrid_control = use_hybrid_control
+        self.reference_targets = reference_targets
+        self.centroidal_planner = centroidal_planner
+        self.gait_schedule = gait_schedule
 
         # Define which joints are torque-controlled in hybrid mode (ankles only)
         self.torque_controlled_joints = ['leg_l5_joint', 'leg_r5_joint']
@@ -130,6 +142,24 @@ class MPCWBCController:
         base_orientation = self._get_base_orientation()
         foot_positions, foot_contacts = self._get_foot_states()
 
+        # Optional centroidal planner
+        if self.centroidal_planner:
+            plan = self._run_centroidal_planner(com_state, dt)
+            if plan is not None:
+                # Override contact flags if available
+                if plan.get("contact_schedule") and len(plan["contact_schedule"]) >= len(foot_contacts):
+                    foot_contacts = plan["contact_schedule"][:len(foot_contacts)]
+                # Use planned COM reference for tracking
+                planned_com = plan.get("com_trajectory", [])
+                if planned_com:
+                    target_com = planned_com[0][0:2]
+                else:
+                    target_com = None
+            else:
+                target_com = None
+        else:
+            target_com = None
+
         # 2. MPC: Compute optimal CoM trajectory
         # Get support center from contact feet (fallback to CoM if no contacts)
         contact_feet = [fp for i, fp in enumerate(foot_positions) if foot_contacts[i]]
@@ -141,7 +171,7 @@ class MPCWBCController:
 
         # Generate reference trajectory (keeping CoM above support)
         current_com = com_state[0:2]  # x, y position
-        target_com = support_center  # Keep CoM above support
+        target_com = target_com if target_com is not None else support_center  # Keep CoM above support
         current_vel = com_state[2:4]  # x_dot, y_dot
 
         reference_traj = self.mpc.generate_reference_trajectory(
@@ -331,6 +361,33 @@ class MPCWBCController:
                     foot_contacts.append(foot_pos[2] < 0.05)
 
         return foot_positions, foot_contacts
+
+    def _run_centroidal_planner(self, com_state: np.ndarray, dt: float) -> Optional[Dict[str, Any]]:
+        """
+        Invoke centroidal planner if provided and return its plan dict.
+        """
+        if self.centroidal_planner is None:
+            return None
+
+        target_vel = np.zeros(3)
+        com_height = com_state[2]
+        if self.reference_targets:
+            target_vel[0] = self.reference_targets.target_displacement_velocity
+            target_vel[2] = 0.0
+            com_height = self.reference_targets.com_height
+
+        return self.centroidal_planner.plan(
+            state={
+                "com_position": com_state[0:3],
+                "com_velocity": com_state[3:6] if len(com_state) >= 6 else np.zeros(3),
+            },
+            references={
+                "com_height": com_height,
+                "target_velocity": target_vel,
+                "contacts": [True, True],
+            },
+            dt=dt,
+        )
 
     def _get_foot_velocities(self) -> List[np.ndarray]:
         """
