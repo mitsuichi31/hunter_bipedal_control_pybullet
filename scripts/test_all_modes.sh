@@ -40,6 +40,12 @@ python3 /workspace/hunter/src/main_simulation.py --mode walking --duration 3 --n
     grep -E "Final|Distance" | tail -3
 echo ""
 
+echo "----------------------------------------------------------------------"
+echo "[Extra] Pytest regression: WBC forward velocity stance"
+echo "----------------------------------------------------------------------"
+pytest -q /workspace/hunter/src/test_wbc_forward_velocity.py
+echo ""
+
 if [ "${WALKING_SMOKE:-0}" != "0" ]; then
   echo "----------------------------------------------------------------------"
   echo "[5/5] Walking smoke test (headless, 2s, Phase 3 WBC path)"
@@ -55,7 +61,7 @@ echo "======================================================================"
 echo ""
 echo "✅ STANDING:     Should show Roll/Pitch < 5°"
 echo "✅ STANDING-MPC: Should show Roll/Pitch < 5°"
-echo "⚠️  WBC:          Falls (needs tuning)"
+echo "✅ WBC:          Stable with aligned mass/force constraints (see test_wbc_forward_velocity)"
 echo "⚠️  WALKING:      Needs WBC redesign (see WALKING_MODE_INVESTIGATION.md)"
 if [ "${WALKING_SMOKE:-0}" != "0" ]; then
   echo "ℹ️  WALKING-SMOKE: Enabled (short 2s headless check, may fail while Phase 3 is in progress)"
