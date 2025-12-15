@@ -33,6 +33,19 @@ def test_wbc_forward_velocity_stance():
     # Enable stable contacts when commanding forward velocity
     sim.connect(enable_stable_contacts=True)
     sim.load_robot(start_position=[0, 0, 0.679])
+    standing_config = {
+        'leg_l1_joint': -0.1,
+        'leg_l2_joint': 0.0,
+        'leg_l3_joint': 0.0,
+        'leg_l4_joint': 0.0,
+        'leg_l5_joint': 0.0,
+        'leg_r1_joint': 0.1,
+        'leg_r2_joint': 0.0,
+        'leg_r3_joint': 0.0,
+        'leg_r4_joint': 0.0,
+        'leg_r5_joint': 0.0,
+    }
+    sim.reset_robot(position=[0, 0, 0.679], joint_positions=standing_config)
     sim.set_contact_properties(
         lateral_friction=physics_params.get("lateral_friction", 1.0),
         spinning_friction=0.2,
