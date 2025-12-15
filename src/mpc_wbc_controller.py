@@ -10,7 +10,7 @@ This mimics the architecture used in MIT Cheetah 3 and Hunter GitHub implementat
 
 import numpy as np
 import pybullet as p
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Any, Optional
 
 from mpc_controller import LinearInvertedPendulumMPC, MPCParams
 from wbc_controller import WholeBodyController, WBCParams
@@ -96,6 +96,9 @@ class MPCWBCController:
         # Diagnostics
         self._diag_steps_logged = 0
 
+        # Optional filtered observation from external observer
+        self.last_observation: Optional[Dict[str, Any]] = None
+
         if use_torque_control or use_hybrid_control:
             if use_hybrid_control:
                 print(f"[WBC] HYBRID MODE: Position control on hips/knees, torque on ankles")
@@ -108,17 +111,19 @@ class MPCWBCController:
             print(f"[WBC] Joint damping: {self.joint_damping_gain}")
             print(f"[WBC] Target CoM height: {self.com_height_target}m")
 
-    def update(self, dt: float) -> Dict[str, float]:
+    def update(self, dt: float, observation: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
         """
         Update controller and compute joint commands
 
         Args:
             dt: Time step
+            observation: Optional filtered observation (base/joint/contact)
 
         Returns:
             joint_commands: Dictionary of joint positions/torques
         """
         self.time += dt
+        self.last_observation = observation
 
         # 1. Get current state
         com_state = self._get_com_state()
@@ -242,7 +247,16 @@ class MPCWBCController:
         Returns:
             state: [x, y, z, dx, dy, dz]
         """
-        # Use accurate CoM from stability_metrics (Phase 1.1)
+        if self.last_observation:
+            base_pos = self.last_observation.get("base_position")
+            base_vel = self.last_observation.get("base_velocity")
+            if base_pos is not None and base_vel is not None:
+                return np.array([
+                    base_pos[0], base_pos[1], base_pos[2],
+                    base_vel[0], base_vel[1], base_vel[2]
+                ])
+
+        # Use accurate CoM from stability_metrics (Phase 1.1) when no filtered data available
         com_pos = compute_com(self.robot_id)
         com_vel = compute_com_velocity(self.robot_id)
 
@@ -253,6 +267,10 @@ class MPCWBCController:
 
     def _get_base_orientation(self) -> np.ndarray:
         """Get base orientation as Euler angles"""
+        if self.last_observation and "base_orientation" in self.last_observation:
+            base_orn = self.last_observation["base_orientation"]
+            return np.array(p.getEulerFromQuaternion(base_orn))
+
         _, base_orn = p.getBasePositionAndOrientation(self.robot_id)
         return np.array(p.getEulerFromQuaternion(base_orn))
 
@@ -264,6 +282,22 @@ class MPCWBCController:
             foot_positions: List of foot positions
             foot_contacts: List of contact flags
         """
+        if self.last_observation:
+            obs_positions = self.last_observation.get("foot_positions", {})
+            obs_contacts = self.last_observation.get("contacts")
+            if obs_positions:
+                # Ensure consistent left/right ordering
+                ordered_positions = []
+                ordered_contacts = []
+                for side in ["left", "right"]:
+                    if side in obs_positions:
+                        ordered_positions.append(np.array(obs_positions[side]))
+                    if obs_contacts is not None and len(obs_contacts) >= 2:
+                        idx = 0 if side == "left" else 1
+                        ordered_contacts.append(bool(obs_contacts[idx]))
+                if ordered_positions:
+                    return ordered_positions, ordered_contacts if ordered_contacts else [False] * len(ordered_positions)
+
         # Find foot links
         foot_links = []
         for i in range(p.getNumJoints(self.robot_id)):

@@ -25,6 +25,31 @@ from mpc_wbc_controller import MPCWBCController
 from wbc_controller import WBCParams
 from wbc_walking_controller import WBCWalkingController, WBCWalkingParams
 from gait_generator import GaitParams
+from config_loader import load_gait_config, load_reference_config, load_task_config
+from estimation.observer import Observer
+
+
+def _build_physics_and_limits(task_config):
+    """Helper to derive physics parameters and command limits from task config."""
+    wbc_cfg = task_config.wbc if hasattr(task_config, "wbc") else {}
+    physics_params = {}
+    if "friction_coefficient" in wbc_cfg:
+        physics_params["lateral_friction"] = wbc_cfg.get("friction_coefficient")
+    for key_src in [
+        "num_solver_iterations",
+        "num_sub_steps",
+        "erp",
+        "contact_erp",
+        "contact_cfm",
+    ]:
+        if key_src in wbc_cfg:
+            physics_params[key_src] = wbc_cfg.get(key_src)
+
+    command_limits = {
+        "max_torque": wbc_cfg.get("max_torque"),
+        "max_velocity": wbc_cfg.get("max_velocity"),
+    }
+    return physics_params, command_limits
 
 # Phase 4: Position Control Walking System
 from position_control_walking import PositionControlWalkingController, WalkingControllerParams
@@ -174,14 +199,27 @@ def run_standing_test_mpc(duration: float = 10.0, use_gui: bool = True):
     """
     print("Running standing test with MPC+ZMP control...")
 
+    task_config = load_task_config()
+    physics_params, command_limits = _build_physics_and_limits(task_config)
+
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
     # Create simulation
-    sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
-    sim.connect()
+    sim = HunterSimulation(
+        urdf_path=urdf_path,
+        dt=0.001,
+        use_gui=use_gui,
+        physics_params=physics_params,
+        command_limits=command_limits,
+    )
+    sim.connect(enable_stable_contacts=True)
     sim.load_robot(start_position=[0, 0, 0.679])
+    # Use default PyBullet contact params (previous stable baseline)
+
+    observer = Observer()
+    observer.reset()
 
     # Create balance controller with MPC
     balance_params = BalanceParams(
@@ -264,7 +302,15 @@ def run_standing_test_mpc(duration: float = 10.0, use_gui: bool = True):
     mpc_update_interval = 0.01  # Update MPC every 10ms (matching balance_params)
 
     # Get initial base position
-    initial_pos, initial_orn, _, _ = sim.get_base_state()
+    initial_raw = sim.get_observations()
+    initial_filtered = observer.update(
+        base_pos=initial_raw["base_position"],
+        base_vel=initial_raw["base_velocity"],
+        joint_states=initial_raw["joint_states"],
+        contact_forces=initial_raw["contact_forces"],
+    )
+    initial_pos = initial_filtered["base_position"]
+    initial_orn = initial_raw["base_orientation"]
     initial_euler = p.getEulerFromQuaternion(initial_orn)
     print(f"Initial base height: {initial_pos[2]:.3f} m")
     print(f"Initial orientation (roll, pitch, yaw): ({np.degrees(initial_euler[0]):.1f}°, {np.degrees(initial_euler[1]):.1f}°, {np.degrees(initial_euler[2]):.1f}°)")
@@ -296,6 +342,14 @@ def run_standing_test_mpc(duration: float = 10.0, use_gui: bool = True):
 
             last_mpc_update = sim_time
 
+        raw_obs = sim.get_observations()
+        filtered = observer.update(
+            base_pos=raw_obs["base_position"],
+            base_vel=raw_obs["base_velocity"],
+            joint_states=raw_obs["joint_states"],
+            contact_forces=raw_obs["contact_forces"],
+        )
+
         # Step simulation
         sim.step()
         sim_time += sim.dt
@@ -309,13 +363,22 @@ def run_standing_test_mpc(duration: float = 10.0, use_gui: bool = True):
         # Print status every second
         if int(sim_time) % 1 == 0 and sim_time > 0:
             if abs(sim_time - int(sim_time)) < 0.001:
-                base_pos, base_orn, _, _ = sim.get_base_state()
+                base_pos = filtered["base_position"]
+                base_orn = raw_obs["base_orientation"]
                 euler = p.getEulerFromQuaternion(base_orn)
                 print(f"Time: {sim_time:.1f}s, Height: {base_pos[2]:.3f} m, " +
                       f"Orient(R/P/Y): ({np.degrees(euler[0]):6.1f}°, {np.degrees(euler[1]):6.1f}°, {np.degrees(euler[2]):6.1f}°)")
 
     # Get final base position and orientation
-    final_pos, final_orn, _, _ = sim.get_base_state()
+    final_raw = sim.get_observations()
+    final_filtered = observer.update(
+        base_pos=final_raw["base_position"],
+        base_vel=final_raw["base_velocity"],
+        joint_states=final_raw["joint_states"],
+        contact_forces=final_raw["contact_forces"],
+    )
+    final_pos = final_filtered["base_position"]
+    final_orn = final_raw["base_orientation"]
     final_euler = p.getEulerFromQuaternion(final_orn)
 
     print(f"\n{'='*60}")
@@ -356,15 +419,28 @@ def run_standing_test(duration: float = 10.0, use_gui: bool = True):
     """
     print("Running standing test (using manual joint positions)...")
 
+    task_config = load_task_config()
+    physics_params, command_limits = _build_physics_and_limits(task_config)
+
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
     # Create simulation
-    sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
+    sim = HunterSimulation(
+        urdf_path=urdf_path,
+        dt=0.001,
+        use_gui=use_gui,
+        physics_params=physics_params,
+        command_limits=command_limits,
+    )
     sim.connect()
     # Start at appropriate height for standing (corrected from 0.40 to 0.679)
     sim.load_robot(start_position=[0, 0, 0.679])
+    # Use default PyBullet contact params (previous stable baseline)
+
+    observer = Observer()
+    observer.reset()
 
     # Create PD controller
     pd_controller = MultiJointPDController(default_kp=200.0, default_kd=20.0)
@@ -443,12 +519,28 @@ def run_standing_test(duration: float = 10.0, use_gui: bool = True):
     sim_time = 0.0
 
     # Get initial base position
-    initial_pos, initial_orn, _, _ = sim.get_base_state()
+    initial_raw = sim.get_observations()
+    initial_filtered = observer.update(
+        base_pos=initial_raw["base_position"],
+        base_vel=initial_raw["base_velocity"],
+        joint_states=initial_raw["joint_states"],
+        contact_forces=initial_raw["contact_forces"],
+    )
+    initial_pos = initial_filtered["base_position"]
+    initial_orn = initial_raw["base_orientation"]
     initial_euler = p.getEulerFromQuaternion(initial_orn)
     print(f"Initial base height: {initial_pos[2]:.3f} m")
     print(f"Initial orientation (roll, pitch, yaw): ({np.degrees(initial_euler[0]):.1f}°, {np.degrees(initial_euler[1]):.1f}°, {np.degrees(initial_euler[2]):.1f}°)")
 
     while sim_time < duration:
+        raw_obs = sim.get_observations()
+        filtered = observer.update(
+            base_pos=raw_obs["base_position"],
+            base_vel=raw_obs["base_velocity"],
+            joint_states=raw_obs["joint_states"],
+            contact_forces=raw_obs["contact_forces"],
+        )
+
         # Step simulation
         sim.step()
         sim_time += sim.dt
@@ -462,13 +554,22 @@ def run_standing_test(duration: float = 10.0, use_gui: bool = True):
         # Print status every second
         if int(sim_time) % 1 == 0 and sim_time > 0:
             if abs(sim_time - int(sim_time)) < 0.001:
-                base_pos, base_orn, _, _ = sim.get_base_state()
+                base_pos = filtered["base_position"]
+                base_orn = raw_obs["base_orientation"]
                 euler = p.getEulerFromQuaternion(base_orn)
                 print(f"Time: {sim_time:.1f}s, Height: {base_pos[2]:.3f} m, " +
                       f"Orient(R/P/Y): ({np.degrees(euler[0]):6.1f}°, {np.degrees(euler[1]):6.1f}°, {np.degrees(euler[2]):6.1f}°)")
 
     # Get final base position and orientation
-    final_pos, final_orn, _, _ = sim.get_base_state()
+    final_raw = sim.get_observations()
+    final_filtered = observer.update(
+        base_pos=final_raw["base_position"],
+        base_vel=final_raw["base_velocity"],
+        joint_states=final_raw["joint_states"],
+        contact_forces=final_raw["contact_forces"],
+    )
+    final_pos = final_filtered["base_position"]
+    final_orn = final_raw["base_orientation"]
     final_euler = p.getEulerFromQuaternion(final_orn)
 
     print(f"\n{'='*60}")
@@ -525,12 +626,26 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
         print("Control mode: POSITION_CONTROL (stable baseline)")
     print()
 
+    # Load structured configs
+    task_config = load_task_config()
+    reference_config = load_reference_config()
+    wbc_cfg = task_config.wbc
+
+    # Physics and safety parameters from config
+    physics_params, command_limits = _build_physics_and_limits(task_config)
+
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
     # Create simulation with enhanced contact solver for torque control
-    sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
+    sim = HunterSimulation(
+        urdf_path=urdf_path,
+        dt=0.001,
+        use_gui=use_gui,
+        physics_params=physics_params,
+        command_limits=command_limits,
+    )
 
     # Enable enhanced contact solver for torque/hybrid control modes
     enable_stable_contacts = (use_torque_control or use_hybrid_control)
@@ -539,13 +654,12 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     sim.load_robot(start_position=[0, 0, 0.679])
 
     # Set contact properties for better foot-ground interaction
-    if enable_stable_contacts:
-        sim.set_contact_properties(
-            lateral_friction=1.2,      # Higher friction to prevent sliding
-            spinning_friction=0.2,     # Prevent foot spinning
-            rolling_friction=0.05,     # Prevent foot rolling
-            restitution=0.0            # No bounce
-        )
+    sim.set_contact_properties(
+        lateral_friction=physics_params.get("lateral_friction", 1.2),      # Higher friction to prevent sliding
+        spinning_friction=0.2,     # Prevent foot spinning
+        rolling_friction=0.05,     # Prevent foot rolling
+        restitution=0.0            # No bounce
+    )
 
     # Stable standing configuration (straight legs, feet on ground)
     standing_config = {
@@ -578,20 +692,31 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     # Initialize MPC + WBC Controller
     print("Initializing MPC + WBC Controller...")
 
+    mpc_cfg = task_config.mpc
     mpc_params = MPCParams(
-        prediction_horizon=20,
-        control_horizon=10,
-        dt=0.03,  # 30Hz control
-        com_height=0.55,  # Adjusted for new base height (was 0.35)
+        prediction_horizon=mpc_cfg.get("horizon_steps", 20),
+        control_horizon=mpc_cfg.get("control_horizon", 10),
+        dt=mpc_cfg.get("dt", 0.03),  # 30Hz control default
+        com_height=mpc_cfg.get("com_height", 0.55),  # Adjusted for new base height (was 0.35)
         gravity=9.81,
-        Q_position=1.0,
-        Q_velocity=0.1,
-        R_zmp=1e-6,
+        Q_position=mpc_cfg.get("weights", {}).get("position", 1.0),
+        Q_velocity=mpc_cfg.get("weights", {}).get("velocity", 0.1),
+        R_zmp=mpc_cfg.get("weights", {}).get("zmp", 1e-6),
         max_zmp_offset=0.08
     )
 
     # Use tuned WBC parameters (Phase 2 + foot anchoring)
     # Enable foot anchoring for torque/hybrid control modes
+    weights_cfg = wbc_cfg.get("weights", {})
+    base_wbc_params = {
+        "friction_coef": wbc_cfg.get("friction_coefficient", 0.6),
+        "max_normal_force": wbc_cfg.get("max_normal_force", 500.0),
+        "min_normal_force": wbc_cfg.get("min_normal_force", 1.0),
+        "w_force_tracking": weights_cfg.get("contact_force_tracking", 1.0),
+        "w_force_regularization": weights_cfg.get("joint_regularization", 0.01),
+        "w_torque_regularization": weights_cfg.get("joint_regularization", 0.001),
+    }
+
     if use_torque_control or use_hybrid_control:
         # Foot anchoring enabled - adds Cartesian stiffness to keep feet planted
         # Allow tuning via environment variables
@@ -600,29 +725,16 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
         anchor_kd = float(os.environ.get("WBC_ANCHOR_KD", "50.0"))
 
         wbc_params = WBCParams(
-            friction_coef=0.6,
-            max_normal_force=500.0,
-            min_normal_force=1.0,
-            w_force_tracking=10.0,
-            w_force_regularization=0.01,
-            w_torque_regularization=0.001,
-            # NEW: Cartesian foot anchoring
+            **base_wbc_params,
             w_foot_anchor=anchor_weight,
             foot_stiffness_kp=anchor_kp,
-            foot_damping_kd=anchor_kd
+            foot_damping_kd=anchor_kd,
         )
         print(f"[WBC] Foot anchoring ENABLED: w={wbc_params.w_foot_anchor}, "
               f"kp={wbc_params.foot_stiffness_kp}, kd={wbc_params.foot_damping_kd}")
     else:
         # Position control mode - no need for foot anchoring
-        wbc_params = WBCParams(
-            friction_coef=0.6,
-            max_normal_force=500.0,
-            min_normal_force=1.0,
-            w_force_tracking=10.0,
-            w_force_regularization=0.01,
-            w_torque_regularization=0.001
-        )
+        wbc_params = WBCParams(**base_wbc_params)
 
     controller = MPCWBCController(
         robot_id=sim.robot_id,
@@ -690,54 +802,27 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     sim_time = 0.0
     control_dt = mpc_params.dt
     last_control = 0.0
+    observer = Observer()
+    observer.reset()
 
     while sim_time < duration:
         # Control update at MPC frequency
         if sim_time - last_control >= control_dt:
             try:
-                # Update controller
-                joint_commands = controller.update(control_dt)
+                raw_obs = sim.get_observations()
+                filtered = observer.update(
+                    base_pos=raw_obs["base_position"],
+                    base_vel=raw_obs["base_velocity"],
+                    joint_states=raw_obs["joint_states"],
+                    contact_forces=raw_obs["contact_forces"],
+                )
+                observation = {**raw_obs, **filtered}
 
-                # Apply commands
-                if use_hybrid_control:
-                    # Apply hybrid commands (mix of torque and position)
-                    for joint_name, command in joint_commands.items():
-                        joint_idx = sim.get_joint_index(joint_name)
-                        if joint_idx is not None:
-                            if isinstance(command, dict) and command.get('mode') == 'torque':
-                                # Apply torque
-                                p.setJointMotorControl2(
-                                    bodyIndex=sim.robot_id,
-                                    jointIndex=joint_idx,
-                                    controlMode=p.TORQUE_CONTROL,
-                                    force=command['value']
-                                )
-                            elif isinstance(command, dict) and command.get('mode') == 'position':
-                                # Apply position (already set during initialization, just update if needed)
-                                p.setJointMotorControl2(
-                                    bodyIndex=sim.robot_id,
-                                    jointIndex=joint_idx,
-                                    controlMode=p.POSITION_CONTROL,
-                                    targetPosition=command['value'],
-                                    force=100.0,
-                                    maxVelocity=10.0
-                                )
-                elif use_torque_control:
-                    # Apply torques directly
-                    sim.set_joint_torques(joint_commands)
-                else:
-                    # Apply position commands (original mode)
-                    for joint_name, target_angle in joint_commands.items():
-                        joint_idx = sim.get_joint_index(joint_name)
-                        if joint_idx is not None:
-                            p.setJointMotorControl2(
-                                bodyIndex=sim.robot_id,
-                                jointIndex=joint_idx,
-                                controlMode=p.POSITION_CONTROL,
-                                targetPosition=target_angle,
-                                force=100.0,
-                                maxVelocity=10.0
-                            )
+                # Update controller with filtered observation
+                joint_commands = controller.update(control_dt, observation=observation)
+
+                # Apply commands using unified hybrid API
+                sim.apply_hybrid_command(joint_commands)
 
             except Exception as e:
                 print(f"Controller error at t={sim_time:.3f}s: {e}")
@@ -805,14 +890,32 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     print("Status: Production-ready (validated 5min continuous walk)")
     print()
 
+    task_config = load_task_config()
+    physics_params, command_limits = _build_physics_and_limits(task_config)
+
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
     # Create simulation environment
-    sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=use_gui)
+    sim = HunterSimulation(
+        urdf_path=urdf_path,
+        dt=0.001,
+        use_gui=use_gui,
+        physics_params=physics_params,
+        command_limits=command_limits,
+    )
     sim.connect()
     sim.load_robot(start_position=[0, 0, 0.679])
+    sim.set_contact_properties(
+        lateral_friction=physics_params.get("lateral_friction", 1.0),
+        spinning_friction=0.2,
+        rolling_friction=0.05,
+        restitution=0.0,
+    )
+
+    observer = Observer()
+    observer.reset()
 
     # Set robot to standing configuration (required for IK solver initialization)
     standing_config = {
@@ -887,6 +990,14 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
 
     # Main control loop
     while sim.time < duration:
+        raw_obs = sim.get_observations()
+        filtered = observer.update(
+            base_pos=raw_obs["base_position"],
+            base_vel=raw_obs["base_velocity"],
+            joint_states=raw_obs["joint_states"],
+            contact_forces=raw_obs["contact_forces"],
+        )
+
         # Get controller commands
         commands = controller.update(sim.dt)
 
@@ -917,7 +1028,8 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
 
         # Print status every 2 seconds
         if sim.time - last_status_print >= 2.0:
-            base_pos, base_orn, _, _ = sim.get_base_state()
+            base_pos = filtered["base_position"]
+            base_orn = raw_obs["base_orientation"]
             if initial_pos is None:
                 initial_pos = base_pos
 
@@ -934,11 +1046,19 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
 
     # Final metrics
     wall_time = time.time() - start_wall_time
-    final_pos, final_orn, _, _ = sim.get_base_state()
+    final_raw = sim.get_observations()
+    final_filtered = observer.update(
+        base_pos=final_raw["base_position"],
+        base_vel=final_raw["base_velocity"],
+        joint_states=final_raw["joint_states"],
+        contact_forces=final_raw["contact_forces"],
+    )
+    final_pos = final_filtered["base_position"]
+    final_orn = final_raw["base_orientation"]
     final_euler = p.getEulerFromQuaternion(final_orn)
 
     if initial_pos is None:
-        initial_pos = [0, 0, 0.679]
+        initial_pos = final_pos
 
     total_distance = final_pos[0] - initial_pos[0]
     walking_speed = total_distance / duration if duration > 0 else 0.0

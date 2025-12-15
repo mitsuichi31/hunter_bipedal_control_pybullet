@@ -6,7 +6,7 @@ import pybullet as p
 import pybullet_data
 import numpy as np
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 
 class HunterSimulation:
@@ -16,7 +16,9 @@ class HunterSimulation:
                  urdf_path: str,
                  dt: float = 0.001,
                  use_gui: bool = True,
-                 use_real_time: bool = False):
+                 use_real_time: bool = False,
+                 physics_params: Optional[Dict[str, Any]] = None,
+                 command_limits: Optional[Dict[str, float]] = None):
         """
         Initialize the simulation environment
 
@@ -25,11 +27,15 @@ class HunterSimulation:
             dt: Simulation time step (seconds)
             use_gui: Whether to use GUI visualization
             use_real_time: Whether to use real-time simulation
+            physics_params: Optional physics configuration (friction, ERP/CFM, solver iters)
+            command_limits: Optional safety limits for torque/velocity clamping
         """
         self.urdf_path = urdf_path
         self.dt = dt
         self.use_gui = use_gui
         self.use_real_time = use_real_time
+        self.physics_params = physics_params or {}
+        self.command_limits = command_limits or {}
 
         # Physics client
         self.physics_client = None
@@ -39,6 +45,9 @@ class HunterSimulation:
         self.joint_dict = {}  # name -> joint_index
         self.controllable_joints = []
         self.joint_limits = {}  # joint_index -> (lower, upper)
+
+        # Foot links (populated after load)
+        self.foot_links: Dict[str, List[int]] = {"left": [], "right": []}
 
         # Simulation state
         self.time = 0.0
@@ -63,6 +72,9 @@ class HunterSimulation:
             p.setRealTimeSimulation(1)
         else:
             p.setRealTimeSimulation(0)
+
+        # Apply optional physics engine parameters
+        self._apply_physics_parameters()
 
         # Enhanced contact solver settings for torque control stability
         if enable_stable_contacts:
@@ -122,6 +134,7 @@ class HunterSimulation:
 
         # Build joint information
         self._build_joint_info()
+        self._identify_feet()
 
         print(f"Loaded robot from {self.urdf_path}")
         print(f"Total joints: {p.getNumJoints(self.robot_id)}")
@@ -141,13 +154,14 @@ class HunterSimulation:
             restitution: Bounciness, 0=no bounce, 1=perfect bounce (default 0.0)
         """
         # Find foot links (leg_l5 and leg_r5 links)
-        foot_links = []
-        num_joints = p.getNumJoints(self.robot_id)
-        for i in range(num_joints):
-            joint_info = p.getJointInfo(self.robot_id, i)
-            link_name = joint_info[12].decode('utf-8')
-            if 'foot' in link_name.lower() or 'l5' in link_name or 'r5' in link_name:
-                foot_links.append(i)
+        foot_links = self.foot_links.get("left", []) + self.foot_links.get("right", [])
+        if not foot_links:
+            num_joints = p.getNumJoints(self.robot_id)
+            for i in range(num_joints):
+                joint_info = p.getJointInfo(self.robot_id, i)
+                link_name = joint_info[12].decode('utf-8')
+                if 'foot' in link_name.lower() or 'l5' in link_name or 'r5' in link_name:
+                    foot_links.append(i)
 
         if len(foot_links) == 0:
             print("Warning: No foot links found for contact property setting")
@@ -361,6 +375,162 @@ class HunterSimulation:
         """Get contact points on the robot"""
         return p.getContactPoints(bodyA=self.robot_id)
 
+    def get_contact_forces(self) -> Dict[str, np.ndarray]:
+        """
+        Aggregate contact forces per foot link using PyBullet contact data.
+
+        Returns:
+            Mapping 'left'/'right' -> force vector (world frame)
+        """
+        forces = {"left": np.zeros(3), "right": np.zeros(3)}
+        contact_points = p.getContactPoints(bodyA=self.robot_id)
+        for cp in contact_points:
+            link_idx = cp[3]  # linkIndexA
+            normal_force = cp[9]
+            normal = np.array(cp[7])  # contact normal on B towards A
+            force_vec = normal * normal_force
+
+            if link_idx in self.foot_links.get("left", []):
+                forces["left"] += force_vec
+            elif link_idx in self.foot_links.get("right", []):
+                forces["right"] += force_vec
+        return forces
+
+    def get_foot_positions(self) -> Dict[str, np.ndarray]:
+        """
+        Get world-frame positions of the feet (left/right).
+        """
+        positions = {}
+        for side, links in self.foot_links.items():
+            if not links:
+                continue
+            # Use first matching link
+            link_idx = links[0]
+            link_state = p.getLinkState(self.robot_id, link_idx)
+            positions[side] = np.array(link_state[0])
+        return positions
+
+    def get_observations(self) -> Dict[str, Any]:
+        """
+        Fetch raw observations from the simulator.
+
+        Returns:
+            Dict with base pose/vel, joint states, contact forces, and foot positions.
+        """
+        base_pos, base_orn, lin_vel, ang_vel = self.get_base_state()
+        joint_states_raw = self.get_joint_states()
+        joint_states = {name: (state[0], state[1]) for name, state in joint_states_raw.items()}
+
+        return {
+            "time": self.time,
+            "base_position": base_pos,
+            "base_orientation": base_orn,
+            "base_velocity": lin_vel,
+            "base_angular_velocity": ang_vel,
+            "joint_states": joint_states,
+            "contact_forces": self.get_contact_forces(),
+            "foot_positions": self.get_foot_positions(),
+        }
+
+    def apply_hybrid_command(self, commands: Dict[str, Any]):
+        """
+        Apply hybrid joint commands (position/velocity/gains + torque feedforward).
+
+        Args:
+            commands: Mapping from joint name to command. Supported forms:
+              - float/int: interpreted as position command
+              - {'mode': 'position', 'value': target, 'kp': ..., 'kd': ..., 'velocity': ...}
+              - {'mode': 'torque', 'value': torque}
+              - {'mode': 'hybrid', 'position': ..., 'velocity': ..., 'kp': ..., 'kd': ..., 'torque': ...}
+        """
+        if commands is None:
+            return
+
+        max_torque = self.command_limits.get("max_torque")
+        max_velocity = self.command_limits.get("max_velocity")
+
+        # Snapshot joint states for PD/hybrid computations
+        joint_states = self.get_joint_states()
+
+        for joint_name, cmd in commands.items():
+            joint_idx = self.get_joint_index(joint_name)
+            if joint_idx is None:
+                continue
+
+            # Normalize command structure
+            if isinstance(cmd, (int, float)):
+                mode = "position"
+                target_pos = float(cmd)
+                target_vel = 0.0
+                kp = None
+                kd = None
+                ff_torque = 0.0
+            elif isinstance(cmd, dict):
+                mode = cmd.get("mode", "position")
+                ff_torque = float(cmd.get("torque", cmd.get("value", 0.0)))
+                target_pos = float(cmd.get("position", cmd.get("value", 0.0)))
+                target_vel = float(cmd.get("velocity", 0.0))
+                kp = cmd.get("kp", None)
+                kd = cmd.get("kd", None)
+            else:
+                continue
+
+            if mode == "torque":
+                torque = self._clamp(ff_torque, max_torque)
+                p.setJointMotorControl2(
+                    bodyIndex=self.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    force=0.0
+                )
+                p.setJointMotorControl2(
+                    bodyIndex=self.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.TORQUE_CONTROL,
+                    force=torque
+                )
+                continue
+
+            if mode == "hybrid":
+                # Compute PD + feedforward torque
+                state = joint_states.get(joint_name, (0.0, 0.0, None, 0.0))
+                pos = state[0]
+                vel = state[1]
+                kp_val = float(kp) if kp is not None else 0.0
+                kd_val = float(kd) if kd is not None else 0.0
+                torque_cmd = kp_val * (target_pos - pos) + kd_val * (target_vel - vel) + ff_torque
+                torque = self._clamp(torque_cmd, max_torque)
+                p.setJointMotorControl2(
+                    bodyIndex=self.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    force=0.0
+                )
+                p.setJointMotorControl2(
+                    bodyIndex=self.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.TORQUE_CONTROL,
+                    force=torque
+                )
+                continue
+
+            # Position mode (default)
+            kwargs = {
+                "bodyIndex": self.robot_id,
+                "jointIndex": joint_idx,
+                "controlMode": p.POSITION_CONTROL,
+                "targetPosition": target_pos,
+            }
+            if kp is not None:
+                kwargs["positionGain"] = float(kp)
+            if kd is not None:
+                kwargs["velocityGain"] = float(kd)
+            if max_velocity is not None:
+                kwargs["maxVelocity"] = max_velocity
+            if max_torque is not None:
+                kwargs["force"] = max_torque
+            p.setJointMotorControl2(**kwargs)
+
     def apply_external_force(self, force: List[float], position: Optional[List[float]] = None,
                             link_index: int = -1, flags: int = p.WORLD_FRAME):
         """
@@ -409,13 +579,56 @@ class HunterSimulation:
 
     def disconnect(self):
         """Disconnect from PyBullet"""
-        if self.physics_client is not None:
-            p.disconnect()
+        if self.physics_client is not None and p.isConnected(self.physics_client):
+            p.disconnect(self.physics_client)
             print("Disconnected from PyBullet")
+        self.physics_client = None
 
     def __del__(self):
         """Cleanup on deletion"""
         self.disconnect()
+
+    def _apply_physics_parameters(self):
+        """
+        Apply optional physics parameters (ERP/CFM, solver iterations) from config.
+        """
+        if not self.physics_params:
+            return
+
+        params = {}
+        if "num_solver_iterations" in self.physics_params and self.physics_params["num_solver_iterations"] is not None:
+            params["numSolverIterations"] = self.physics_params["num_solver_iterations"]
+        if "num_sub_steps" in self.physics_params and self.physics_params["num_sub_steps"] is not None:
+            params["numSubSteps"] = self.physics_params["num_sub_steps"]
+        if "erp" in self.physics_params and self.physics_params["erp"] is not None:
+            params["erp"] = self.physics_params["erp"]
+        if "contact_erp" in self.physics_params and self.physics_params["contact_erp"] is not None:
+            params["contactERP"] = self.physics_params["contact_erp"]
+        if "contact_cfm" in self.physics_params and self.physics_params["contact_cfm"] is not None:
+            params["contactCFM"] = self.physics_params["contact_cfm"]
+
+        if params:
+            p.setPhysicsEngineParameter(**params)
+
+    def _identify_feet(self):
+        """
+        Populate left/right foot link indices based on link names.
+        """
+        self.foot_links = {"left": [], "right": []}
+        num_joints = p.getNumJoints(self.robot_id)
+        for i in range(num_joints):
+            joint_info = p.getJointInfo(self.robot_id, i)
+            link_name = joint_info[12].decode('utf-8').lower()
+            if "left" in link_name or "l5" in link_name:
+                self.foot_links["left"].append(i)
+            elif "right" in link_name or "r5" in link_name:
+                self.foot_links["right"].append(i)
+
+    @staticmethod
+    def _clamp(value: float, limit: Optional[float]) -> float:
+        if limit is None or limit <= 0:
+            return value
+        return max(min(value, limit), -limit)
 
 
 if __name__ == "__main__":
