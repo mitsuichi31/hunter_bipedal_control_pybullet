@@ -1,33 +1,33 @@
 # Session Status (feature/pybullet-rebuild-plan)
 
-Date: 2025-xx-xx (update when resuming)
+Date: 2025-12-15
 
 ## What we did this session
-- Created branch `feature/pybullet-rebuild-plan` and merged `origin/phase4-position-control-walking` to pull in Phase 4 walking work, COM planner, contact state machine, and expanded tests/docs.
-- Added reconstruction guidance: `REBUILD_PLAN.md`, `AGENTS.md`, `AGENTS_CONTAINER.md`.
-- Scaffolding toward ROS-like MPC→estimation→WBC pipeline:
-  - New configs with ROS parity: `config/gait.yaml`, `config/reference.yaml`, `config/task.yaml`.
-  - Config loader extended to parse gait/reference/task YAMLs while keeping legacy defaults.
-  - Estimation skeleton: low-pass filters, contact estimator with hysteresis, observer wrapper (`src/estimation/...`).
-  - Planning skeleton: gait schedule helper, reference manager, centroidal MPC placeholder (`src/planning/...`).
+- Wired config/observer/runtime plumbing:
+  - `simulation_env.py` now exposes `get_observations()`/`apply_hybrid_command()`, applies physics params, and discovers foot links.
+  - `main_simulation.py` consumes `gait/reference/task` YAMLs, filters state via `Observer`, and auto-enables enhanced contacts when commanding forward velocity.
+  - Added GUI MIT-SHM/OpenGL notes to README/run scripts.
+- Planning/WBC:
+  - Upgraded centroidal planner: gait-driven contact schedule, nominal forces, mass aligned to URDF (12.6 kg).
+  - MPCWBC now accepts filtered observations, planner contacts/forces, and enforces total normal force ≥ mg in WBC QP.
+  - Auto enhanced-contact solver when forward velocity is requested.
+- Stability:
+  - WBC stable 10s with forward velocity 0.4 m/s gait trot; force tracking matches gravity.
+  - Standing/standing-mpc/walking modes stable in GUI/headless runs.
+- Tests:
+  - Added regression `src/test_wbc_forward_velocity.py`; hooked pytest into `scripts/test_all_modes.sh`; pytest added to requirements; `test_all_modes` passes in container.
+- Investigation:
+  - Walking mode manual test shows sideways drift and little forward motion despite commands; needs tuning.
 
 ## Current branch state
 - Branch: `feature/pybullet-rebuild-plan`
-- Working tree: clean (last commit: scaffold configs + estimation/planning skeletons)
+- Working tree: clean (last commit: test harness + WBC stability fixes)
 
 ## Next steps (resume here)
-1) Integrate new configs/observer into runtime:
-   - Wire `config_loader` outputs into `main_simulation.py` and `simulation_env.py`.
-   - Add `get_observations()` and `apply_hybrid_command()` APIs to `simulation_env.py`, applying physics params from config (friction/ERP/CFM).
-   - Use `Observer` to filter base/joint states and contact forces before controllers consume them.
-2) Planning/MPC:
-   - Replace centroidal MPC placeholder with usable planner or couple to existing COM planner from Phase 4; ensure outputs (CoM traj + contact forces + schedule) align with `task.yaml` weights.
-3) WBC alignment:
-   - Refactor `wbc_controller.py`/`wbc_tasks.py` to use new task weights, friction coefficient, normal force bounds, and torque/velocity limits; add PD fallback on infeasible QP.
-4) Orchestration:
-   - Update `mpc_wbc_controller.py` to synchronize MPC (10 ms) and WBC (per-step) using observer outputs; expose modes in `main_simulation.py` (`standing`, `standing-mpc`, `walking/trot`).
-5) Tests/diagnostics:
-   - Extend `scripts/test_all_modes.sh` to include standing/trot with torso-angle bounds; hook in baseline recorder once added.
+1) Walking forward drift: log base X/Y/gait targets in walking mode, inspect reference_x updates and footstep symmetry, retune gains/foot placements to recover forward progress.
+2) Expand regressions: add higher-velocity WBC regression (e.g., 0.4 m/s trot) and optional walking smoke pytest.
+3) Diagnostics: add CoM/support/ZMP logging and planner vs. solved force deltas; consider longer endurance runs (30–60s) in GUI/headless.
+4) Parity check: ensure mass/friction/contact solver settings are consistent across standing-mpc/walking and document defaults.
 
 ## Open questions / notes
 - Decide how much of the Phase 4 position-control walking to keep vs. supersede with MPC→WBC; may keep as a fallback mode.
