@@ -153,6 +153,16 @@ docker run -it --rm \
 
 ### GUIが表示されない
 
+#### MIT-SHM / OpenGLエラー（`BadValue`, `MIT-SHM`, `nouveau`関連）
+
+PyBullet GUI が X11 + llvmpipe 環境で動かない場合は、以下の環境変数を付けて実行してください（`docker-compose exec` 時など）:
+
+```bash
+QT_X11_NO_MITSHM=1 PYBULLET_USE_OPENGL2=1 python3 src/main_simulation.py --mode standing --duration 10
+```
+
+これにより MIT-SHM を無効化し、古い OpenGL2 パスを使うことで GUI を安定化します。
+
 #### Linux/WSL2の場合
 
 ```bash
