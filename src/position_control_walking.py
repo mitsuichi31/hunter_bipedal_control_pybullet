@@ -104,6 +104,7 @@ class PositionControlWalkingController:
         self.reference_xy = np.zeros(2)  # Nominal world-frame walking reference
         self._desired_forward_velocity = 0.0
         self._next_diag_print = 0.0
+        self._lateral_bias_limit = 0.08
 
         # State estimation (CoM)
         self.filtered_com_pos = np.zeros(3)
@@ -134,6 +135,7 @@ class PositionControlWalkingController:
         else:
             self._desired_forward_velocity = 0.0
         self._next_diag_print = 0.0
+        self._lateral_bias_limit = 0.08
 
         # Reset CoM planner to current state
         com_pos = self._compute_com()
@@ -358,6 +360,12 @@ class PositionControlWalkingController:
         # targets chasing instantaneous base drift.
         if self.params.enable_walking:
             self.reference_xy[0] += self._desired_forward_velocity * dt
+            # Integrate lateral bias to recenter base y around 0 in the reference frame
+            lat_gain = 1.5
+            self.reference_xy[1] += (-lat_gain * base_pos[1]) * dt
+            self.reference_xy[1] = np.clip(self.reference_xy[1],
+                                           -self._lateral_bias_limit,
+                                           self._lateral_bias_limit)
 
         # Update state estimate (CoM) for feedback/planner sync
         com_pos_est, com_vel_est = self._update_state_estimate(dt)
@@ -392,6 +400,39 @@ class PositionControlWalkingController:
                                  -self.params.zmp_correction_limit,
                                  self.params.zmp_correction_limit)
         zmp_command = zmp_desired + zmp_correction
+
+        # Lateral recentering (simple): bias ZMP toward midline based on base_y
+        lateral_bias_gain = 0.20
+        lateral_bias_limit = 0.04
+        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+        lat_bias = -lateral_bias_gain * base_pos[1]
+        lat_bias = np.clip(lat_bias, -lateral_bias_limit, lateral_bias_limit)
+        zmp_command[1] += lat_bias
+
+        # Yaw/lateral straightening: nudge swing foot targets toward midline/opposite drift
+        yaw_correction_gain = 0.05   # Heading correction (reduced)
+        lateral_correction_gain = 0.10  # Soft lateral drift correction
+        forward_yaw_gain = 0.0      # Disable x-shift from yaw for simplicity
+        forward_lat_gain = 0.05     # Mild forward foot bias from lateral error
+        yaw_to_y_gain = 0.02        # Small yaw-driven lateral foot shift to straighten heading
+        base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
+        base_yaw = p.getEulerFromQuaternion(base_orn)[2]
+        yaw_shift = -yaw_correction_gain * base_yaw
+        lat_shift = -lateral_correction_gain * base_pos[1]
+        # Apply corrections only to swing feet
+        left_contact, right_contact = contacts
+        # Enforce symmetric lateral anchors during swing around stance width midline
+        swing_y = self.params.gait.stance_width / 2.0
+        if not left_contact:
+            left_foot_target_world = np.array([left_foot_target_world[0] + forward_yaw_gain * (-base_yaw),
+                                               swing_y + yaw_shift + lat_shift,
+                                               left_foot_target_world[2]])
+            left_foot_target_world[0] += -forward_lat_gain * base_pos[1]
+        if not right_contact:
+            right_foot_target_world = np.array([right_foot_target_world[0] + forward_yaw_gain * (-base_yaw),
+                                                -swing_y + yaw_shift + lat_shift,
+                                                right_foot_target_world[2]])
+            right_foot_target_world[0] += -forward_lat_gain * base_pos[1]
 
         # Lightweight diagnostics to debug drift/target alignment
         if self.time >= self._next_diag_print and self.time <= 15.0:
