@@ -8,9 +8,12 @@ Author: Phase 4.1 Implementation (Simplified)
 Date: 2025-11-25
 """
 
-import numpy as np
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Optional, Tuple
+
+import numpy as np
+
+from robot_constants import BASE_HEIGHT
 
 
 @dataclass
@@ -18,7 +21,7 @@ class SimpleCoMPlannerParams:
     """Parameters for Simple CoM Planner"""
 
     # Physical parameters
-    com_height: float = 0.689  # meters
+    com_height: float = BASE_HEIGHT  # meters
     gravity: float = 9.81  # m/s^2
 
     # Control parameters

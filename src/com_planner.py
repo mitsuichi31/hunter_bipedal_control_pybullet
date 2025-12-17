@@ -20,13 +20,15 @@ from dataclasses import dataclass
 from typing import Tuple, Optional
 import scipy.linalg
 
+from robot_constants import BASE_HEIGHT
+
 
 @dataclass
 class CoMPlannerParams:
     """Parameters for Preview Control CoM Planner"""
 
     # Physical parameters
-    com_height: float = 0.689  # meters (from Phase 2 standing height)
+    com_height: float = BASE_HEIGHT  # meters (canonical standing height)
     gravity: float = 9.81  # m/s^2
 
     # Preview control parameters
