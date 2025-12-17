@@ -281,7 +281,7 @@ def test_wbc_parameters():
 
     p.disconnect()
 
-    return all_pass
+    assert all_pass, "WBC standing validation failed"
 
 
 if __name__ == "__main__":

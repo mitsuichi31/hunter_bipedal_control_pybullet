@@ -137,7 +137,7 @@ def test_fixed_feet_com_shift():
     if solution is None:
         print("\n✗ FAIL: IK did not converge")
         p.disconnect()
-        return False
+        assert False, "IK did not converge"
 
     # Apply solution and check
     p.resetBasePositionAndOrientation(robot_id, solution['base_pos'], solution['base_orn'])
@@ -168,7 +168,7 @@ def test_fixed_feet_com_shift():
     print(f"\n{'✓ PASS' if success else '✗ FAIL'}: Foot error < 1cm, CoM error < 2cm")
 
     p.disconnect()
-    return success
+    assert success, "IK fixed-feet CoM shift exceeded tolerance"
 
 
 def test_single_support():
@@ -212,7 +212,7 @@ def test_single_support():
     if solution is None:
         print("\n✗ FAIL: IK did not converge")
         p.disconnect()
-        return False
+        assert False, "IK did not converge"
 
     # Apply solution
     p.resetBasePositionAndOrientation(robot_id, solution['base_pos'], solution['base_orn'])
@@ -240,7 +240,7 @@ def test_single_support():
     print(f"\n{'✓ PASS' if success else '✗ FAIL'}: Stance foot < 1cm, CoM < 3cm")
 
     p.disconnect()
-    return success
+    assert success, "Single-support IK exceeded tolerance"
 
 
 def test_performance():
@@ -285,7 +285,7 @@ def test_performance():
     if len(solve_times) == 0:
         print("\n✗ FAIL: No successful solves")
         p.disconnect()
-        return False
+        assert False, "No successful solves"
 
     avg_time = np.mean(solve_times)
     max_time = np.max(solve_times)
@@ -303,7 +303,7 @@ def test_performance():
     print(f"\n{'✓ PASS' if success else '✗ FAIL'}: Average time < 100ms")
 
     p.disconnect()
-    return success
+    assert success, "IK performance below threshold"
 
 
 if __name__ == "__main__":

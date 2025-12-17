@@ -140,7 +140,7 @@ def test_standing_mode():
         if position_commands is None:
             print(f"\n✗ FAIL: Emergency stop at t={t:.2f}s")
             p.disconnect()
-            return False
+            assert False, f"Emergency stop at t={t:.2f}s"
 
         # Apply position control
         apply_position_control(robot_id, joint_dict, position_commands)
@@ -214,7 +214,7 @@ def test_standing_mode():
     print(f"\nPlot saved to: logs/position_control_standing_test.png")
 
     p.disconnect()
-    return success
+    assert success, "Standing mode regression failed thresholds"
 
 
 def test_minimal_walking():
@@ -277,7 +277,7 @@ def test_minimal_walking():
             print(f"  Steps completed: {steps_completed:.1f}")
 
             p.disconnect()
-            return False
+            assert False, f"Emergency stop at t={t:.2f}s"
 
         # Apply position control
         apply_position_control(robot_id, joint_dict, position_commands)
@@ -371,7 +371,7 @@ def test_minimal_walking():
     print(f"\nPlot saved to: logs/position_control_walking_test.png")
 
     p.disconnect()
-    return success
+    assert success, "Minimal walking regression failed thresholds"
 
 
 def test_disturbance_rejection():
@@ -523,7 +523,7 @@ def test_disturbance_rejection():
 
     # Overall success: robot recovered from at least 75% of pushes
     overall_success = sum(1 for r in all_results if r["success"]) >= 3
-    return overall_success
+    assert overall_success, "Disturbance rejection failed thresholds"
 
 
 def run_gain_sweep():
