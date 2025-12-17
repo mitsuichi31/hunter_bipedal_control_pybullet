@@ -1,33 +1,25 @@
 # Session Status (feature/pybullet-rebuild-plan)
 
-Date: 2025-12-15
+Date: 2025-12-17
 
 ## What we did this session
-- Wired config/observer/runtime plumbing:
-  - `simulation_env.py` now exposes `get_observations()`/`apply_hybrid_command()`, applies physics params, and discovers foot links.
-  - `main_simulation.py` consumes `gait/reference/task` YAMLs, filters state via `Observer`, and auto-enables enhanced contacts when commanding forward velocity.
-  - Added GUI MIT-SHM/OpenGL notes to README/run scripts.
-- Planning/WBC:
-  - Upgraded centroidal planner: gait-driven contact schedule, nominal forces, mass aligned to URDF (12.6 kg).
-  - MPCWBC now accepts filtered observations, planner contacts/forces, and enforces total normal force ≥ mg in WBC QP.
-  - Auto enhanced-contact solver when forward velocity is requested.
-- Stability:
-  - WBC stable 10s with forward velocity 0.4 m/s gait trot; force tracking matches gravity.
-  - Standing/standing-mpc/walking modes stable in GUI/headless runs.
-- Tests:
-  - Added regression `src/test_wbc_forward_velocity.py`; hooked pytest into `scripts/test_all_modes.sh`; pytest added to requirements; `test_all_modes` passes in container.
-- Investigation:
-  - Walking mode manual test shows sideways drift and little forward motion despite commands; needs tuning.
+- Added a headless regression for position-control walking (`test_position_control_walking_regression.py`) that asserts forward progress plus tight lateral/yaw/tilt/height bounds; wired it into `scripts/test_all_modes.sh` and ran in the container (passes in ~7.4s).
+- Walking straightness/lateral control:
+  - Added integrative lateral recentering of the walking frame and simplified lateral/ZMP biasing; introduced light yaw→y swing-foot shift. Headless runs now show lateral drift ~8 mm over 12s with small yaw.
+  - Added swing-foot symmetry/corrections and per-step diagnostics; measured straightness via 12s logs (e.g., final y ≈ +0.008 m, yaw ≈ -0.94°).
+- Lateral drift tuning iterations:
+  - Tried stronger ZMP/swing corrections, forward-lateral biases, yaw-to-x shifts; reverted to simpler scheme after no benefit.
+- Commit: `Tighten walking lateral recentering` (position_control_walking.py tweaks).
 
 ## Current branch state
 - Branch: `feature/pybullet-rebuild-plan`
-- Working tree: clean (last commit: test harness + WBC stability fixes)
+- Working tree: clean (last commit: Add walking regression test)
 
 ## Next steps (resume here)
-1) Walking forward drift: log base X/Y/gait targets in walking mode, inspect reference_x updates and footstep symmetry, retune gains/foot placements to recover forward progress.
-2) Expand regressions: add higher-velocity WBC regression (e.g., 0.4 m/s trot) and optional walking smoke pytest.
-3) Diagnostics: add CoM/support/ZMP logging and planner vs. solved force deltas; consider longer endurance runs (30–60s) in GUI/headless.
-4) Parity check: ensure mass/friction/contact solver settings are consistent across standing-mpc/walking and document defaults.
+1) Foot sliding: anchor stance foot targets during contact (freeze world x/y) and/or increase foot friction to eliminate sliding in GUI; verify in headless/GUI.
+2) Finish straightness/yaw: re-run 12–20s with stance-foot anchoring; adjust small yaw/lat gains if needed to keep y drift <1 cm and yaw ~0°.
+3) Forward speed: once straightness is stable, retune step_length/period for desired speed and keep the walking smoke/regression green.
+4) (Optional) Regression/diagnostics: log CoM/ZMP vs targets during walking; consider a straight-line drift assertion in the smoke path (pytest regression already added).
 
 ## Open questions / notes
 - Decide how much of the Phase 4 position-control walking to keep vs. supersede with MPC→WBC; may keep as a fallback mode.
