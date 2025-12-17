@@ -37,6 +37,12 @@ Docker 推奨: `cd docker && docker-compose up -d` 後、コンテナ内で上�
 - テスト共通化: URDF/立位姿勢は `test_helpers.py` を利用。
 - ログ/PNG は `logs/` に出力（CI向けにはコミット対象外を推奨）。
 - 過去のフェーズ資料・古いプランは `obsolete_docs/` へ移動済み。
+- 制御パラメータ（主要なデフォルト）:
+  - シミュレーション `dt=0.001s`、制御更新 `dt=0.02s`（50 Hz）
+  - 位置制御歩行 ZMPフィードバック: `zmp_feedback_gain=0.1`、`zmp_correction_limit=0.05 m`
+  - CoMプランナ（simple）: `com_height=0.679m`、`zmp_kp=10.0`、`zmp_kd=3.0`、`preview_time=0.5s`
+  - IK/姿勢: 立位姿勢 `STANDING_CONFIG` を目標に使用
+  - MPC+WBC（立位系）代表値: `kp_orientation=100`、`kd_orientation=3`、`kp_com=50`、`kd_com=5`、`height_kp=60`、`height_kd=6`
 
 ## 貢献
 コーディング規約・テスト手順は `AGENTS.md` を参照。Pull Request では実行コマンドと結果を記載してください。
