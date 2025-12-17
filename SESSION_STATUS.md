@@ -1,26 +1,25 @@
-# Session Status (feature/pybullet-rebuild-plan)
+# Session Status (main)
 
 Date: 2025-12-17
 
 ## What we did this session
-- Added a headless regression for position-control walking (`test_position_control_walking_regression.py`) that asserts forward progress plus tight lateral/yaw/tilt/height bounds; wired it into `scripts/test_all_modes.sh` and ran in the container (passes in ~7.4s).
-- Walking straightness/lateral control:
-  - Added integrative lateral recentering of the walking frame and simplified lateral/ZMP biasing; introduced light yaw→y swing-foot shift. Headless runs now show lateral drift ~8 mm over 12s with small yaw.
-  - Added swing-foot symmetry/corrections and per-step diagnostics; measured straightness via 12s logs (e.g., final y ≈ +0.008 m, yaw ≈ -0.94°).
-- Lateral drift tuning iterations:
-  - Tried stronger ZMP/swing corrections, forward-lateral biases, yaw-to-x shifts; reverted to simpler scheme after no benefit.
-- Commit: `Tighten walking lateral recentering` (position_control_walking.py tweaks).
+- 共通定数を整理 (`robot_constants.py`), テスト共通ヘルパ追加 (`test_helpers.py`)、各テスト/コントローラに適用。
+- 位置制御歩行回帰 (`test_position_control_walking_regression.py`) を追加し、`scripts/test_all_modes.sh` に組み込み済み。
+- Estimation/WBC/WBC歩行などで立位姿勢を共有し、ハードコード除去。`position_control_walking.py` にヘルパ抽出。
+- ドキュメント刷新（JP）：README/Quickstart/コントローラ比較・概要を現状に合わせ更新。旧フェーズ/計画系ドキュメントは `obsolete_docs/` へ整理。
+- 新規ユニットテスト: `test_estimation.py`（StateFilter/ContactEstimator）。
 
 ## Current branch state
-- Branch: `feature/pybullet-rebuild-plan`
-- Working tree: clean (last commit: Add walking regression test)
+- Branch: `main`
+- Working tree: logs/ のみ変更（PNG）
+- 最新コミット例: `Add control parameter defaults to README`, `Refresh walking/WBC docs to current state`, `Archive obsolete docs`
 
 ## Next steps (resume here)
-1) Foot sliding: anchor stance foot targets during contact (freeze world x/y) and/or increase foot friction to eliminate sliding in GUI; verify in headless/GUI.
-2) Finish straightness/yaw: re-run 12–20s with stance-foot anchoring; adjust small yaw/lat gains if needed to keep y drift <1 cm and yaw ~0°.
-3) Forward speed: once straightness is stable, retune step_length/period for desired speed and keep the walking smoke/regression green.
-4) (Optional) Regression/diagnostics: log CoM/ZMP vs targets during walking; consider a straight-line drift assertion in the smoke path (pytest regression already added).
+1) 位置制御歩行の細部調整（必要なら）：足滑り/GUI挙動確認、Yaw/横ずれ調整、速度チューニング。
+2) WBC歩行の再設計検討（参考コード整備）または MPC+WBC 立位パスの強化。
+3) 残るテスト警告の整理（dataclass コレクション警告など）とテスト共通ヘルパの適用範囲拡大。
+4) 長時間/診断テストは必要時のみ `RUN_ROBUSTNESS`/`RUN_DIAGNOSTICS` で実行（PyBullet 不安定性に注意）。
 
 ## Open questions / notes
-- Decide how much of the Phase 4 position-control walking to keep vs. supersede with MPC→WBC; may keep as a fallback mode.
-- Confirm friction/COM height/mass consistency between PyBullet URDF and container configs when tuning.
+- WBC歩行の再設計をどこまで進めるか（現状は位置制御歩行が本線）。
+- 長時間診断をCIに組み込むかは未定（PyBullet不安定性を考慮）。
