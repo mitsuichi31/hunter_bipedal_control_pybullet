@@ -19,6 +19,7 @@ import gc
 from dataclasses import dataclass, asdict
 
 from robot_constants import BASE_HEIGHT, standing_config_copy
+from test_helpers import urdf_path
 from simulation_env import HunterSimulation
 from wbc_walking_controller import WBCWalkingController, WBCWalkingParams
 from wbc_controller import WBCParams
@@ -68,8 +69,7 @@ class WalkingTestSuite:
         import os
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.output_dir = os.path.join(script_dir, "..")  # Project root
-        urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
-        sim = HunterSimulation(urdf_path=urdf_path, use_gui=self.use_gui, dt=0.001)
+        sim = HunterSimulation(urdf_path=urdf_path(), use_gui=self.use_gui, dt=0.001)
         sim.connect()
         sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 

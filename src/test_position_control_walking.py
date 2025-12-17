@@ -23,6 +23,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from robot_constants import BASE_HEIGHT, standing_config_copy
+from test_helpers import urdf_path
 from position_control_walking import PositionControlWalkingController, WalkingControllerParams
 from gait_generator import GaitParams
 
@@ -40,8 +41,7 @@ def setup_robot():
     p.loadURDF("plane.urdf")
 
     # Load robot at correct height
-    urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
+    robot_id = p.loadURDF(urdf_path(), [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     # Get joint info
     joint_dict = {}

@@ -11,12 +11,12 @@ Author: Phase 4.2 Testing
 Date: 2025-11-25
 """
 
-import os
 import numpy as np
 import pybullet as p
 import sys
 from robot_constants import BASE_HEIGHT
 from full_body_ik import FullBodyIKSolver, FullBodyIKParams
+from test_helpers import urdf_path
 
 
 def setup_robot():
@@ -27,9 +27,7 @@ def setup_robot():
     p.setTimeStep(0.001)
 
     # Load robot
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
+    robot_id = p.loadURDF(urdf_path(), [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     # Get joint info
     joint_dict = {}
