@@ -525,12 +525,7 @@ class WBCWalkingController:
     def _get_posture_targets(self) -> np.ndarray:
         """Standing posture targets in actuated joint order"""
         if self._posture_targets is None:
-            standing_config = standing_config_copy()
-            targets = []
-            for idx in self.inv_dyn._actuated_joints:
-                joint_name = self.inv_dyn._joint_names.get(idx)
-                targets.append(standing_config.get(joint_name, 0.0))
-            self._posture_targets = np.array(targets)
+            self._posture_targets = self._build_posture_targets(STANDING_CONFIG)
         return self._posture_targets
 
     def _compute_posture_pd(self,
