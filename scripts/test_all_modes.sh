@@ -46,12 +46,18 @@ echo "----------------------------------------------------------------------"
 pytest -q /workspace/hunter/src/test_wbc_forward_velocity.py
 echo ""
 
+echo "----------------------------------------------------------------------"
+echo "[Extra] Pytest regression: Position-control walking straightness"
+echo "----------------------------------------------------------------------"
+pytest -q /workspace/hunter/src/test_position_control_walking_regression.py
+echo ""
+
 if [ "${WALKING_SMOKE:-0}" != "0" ]; then
   echo "----------------------------------------------------------------------"
-  echo "[5/5] Walking smoke test (headless, 2s, Phase 3 WBC path)"
+  echo "[5/5] Walking smoke test (headless, 12s, position-control path)"
   echo "----------------------------------------------------------------------"
-  python3 /workspace/hunter/src/main_simulation.py --mode walking --duration 2 --no-gui 2>&1 | \
-      grep -E "WARNING|Roll|Pitch|Final|Distance" | tail -5
+  python3 /workspace/hunter/src/main_simulation.py --mode walking --duration 12 --no-gui 2>&1 | \
+      grep -E "WARNING|Roll|Pitch|Final|Distance|yaw|drift|Drift" | tail -8
   echo ""
 fi
 
@@ -62,9 +68,9 @@ echo ""
 echo "✅ STANDING:     Should show Roll/Pitch < 5°"
 echo "✅ STANDING-MPC: Should show Roll/Pitch < 5°"
 echo "✅ WBC:          Stable with aligned mass/force constraints (see test_wbc_forward_velocity)"
-echo "⚠️  WALKING:      Needs WBC redesign (see WALKING_MODE_INVESTIGATION.md)"
+echo "⚠️  WALKING:      Position-control walking is experimental; see WALKING_MODE_INVESTIGATION.md"
 if [ "${WALKING_SMOKE:-0}" != "0" ]; then
-  echo "ℹ️  WALKING-SMOKE: Enabled (short 2s headless check, may fail while Phase 3 is in progress)"
+  echo "ℹ️  WALKING-SMOKE: Enabled (12s headless position-control check; may fail if tuning regresses)"
   echo "     Run with: WALKING_SMOKE=1 bash scripts/test_all_modes.sh"
 fi
 echo ""
