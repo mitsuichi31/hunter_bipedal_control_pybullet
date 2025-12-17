@@ -72,7 +72,6 @@ def test_state_machine_timing():
     assert transitions[1][1] == ContactPhase.DOUBLE_SUPPORT
 
     print("\n✓ State machine timing is correct!")
-    return True
 
 
 def test_contact_flags():
@@ -97,7 +96,6 @@ def test_contact_flags():
         assert (left, right) == expected_contacts, f"Contact mismatch for {phase.name}"
 
     print("\n✓ Contact flags are correct!")
-    return True
 
 
 def test_swing_phase_progress():
@@ -124,7 +122,6 @@ def test_swing_phase_progress():
         assert abs(progress - expected) < 0.01, f"Progress mismatch at t={t}"
 
     print("\n✓ Swing phase progress is correct!")
-    return True
 
 
 def test_contact_detection_with_pybullet():
@@ -183,7 +180,6 @@ def test_contact_detection_with_pybullet():
 
     sim.disconnect()
     print("\n✓ Contact detection works with PyBullet!")
-    return True
 
 
 def test_reset():
@@ -213,7 +209,6 @@ def test_reset():
     assert fsm.step_count == 0, "Step count should be 0"
 
     print("\n✓ Reset works correctly!")
-    return True
 
 
 def test_transition_detection():
@@ -241,7 +236,6 @@ def test_transition_detection():
     assert in_trans, "Should be in transition near end"
 
     print("\n✓ Transition detection works!")
-    return True
 
 
 def run_all_tests():
