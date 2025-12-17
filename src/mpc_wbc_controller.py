@@ -12,6 +12,7 @@ import numpy as np
 import pybullet as p
 from typing import Dict, Tuple, List, Any, Optional
 
+from robot_constants import STANDING_CONFIG
 from mpc_controller import LinearInvertedPendulumMPC, MPCParams
 from wbc_controller import WholeBodyController, WBCParams
 from wbc_tasks import (
@@ -570,24 +571,11 @@ class MPCWBCController:
 
     def _get_posture_targets(self) -> np.ndarray:
         """Get target joint positions for standing posture (straight legs)"""
-        standing_config = {
-            'leg_l1_joint': -0.1,
-            'leg_l2_joint': 0.0,
-            'leg_l3_joint': 0.0,
-            'leg_l4_joint': 0.0,
-            'leg_l5_joint': 0.0,
-            'leg_r1_joint': 0.1,
-            'leg_r2_joint': 0.0,
-            'leg_r3_joint': 0.0,
-            'leg_r4_joint': 0.0,
-            'leg_r5_joint': 0.0,
-        }
-
         targets = []
         for joint_idx in self.inv_dyn._actuated_joints:
             joint_name = self.inv_dyn._joint_names.get(joint_idx)
-            if joint_name in standing_config:
-                targets.append(standing_config[joint_name])
+            if joint_name in STANDING_CONFIG:
+                targets.append(STANDING_CONFIG[joint_name])
             else:
                 targets.append(0.0)
 

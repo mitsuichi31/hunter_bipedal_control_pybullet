@@ -211,23 +211,17 @@ class PositionControlWalkingController:
 
         return (left_contact, right_contact)
 
-    def _compute_desired_zmp(self,
-                            left_foot_pos: np.ndarray,
-                            right_foot_pos: np.ndarray,
-                            contacts: Tuple[bool, bool]) -> np.ndarray:
+    def _compute_desired_zmp(
+        self,
+        left_foot_pos: np.ndarray,
+        right_foot_pos: np.ndarray,
+        contacts: Tuple[bool, bool],
+    ) -> np.ndarray:
         """
         Compute desired ZMP position based on gait state
 
         During double support: ZMP between feet
         During single support: ZMP at stance foot
-
-        Args:
-            left_foot_pos: Left foot target position
-            right_foot_pos: Right foot target position
-            contacts: (left_contact, right_contact)
-
-        Returns:
-            Desired ZMP [x, y] in world frame
         """
         left_contact, right_contact = contacts
 
@@ -239,10 +233,10 @@ class PositionControlWalkingController:
             # Compute weight (smoother transition during double support)
             if phase < np.pi:
                 # First half: transitioning from right to left
-                weight = 0.5 + 0.5 * np.sin(phase - np.pi/2)
+                weight = 0.5 + 0.5 * np.sin(phase - np.pi / 2)
             else:
                 # Second half: transitioning from left to right
-                weight = 0.5 + 0.5 * np.sin(phase - 3*np.pi/2)
+                weight = 0.5 + 0.5 * np.sin(phase - 3 * np.pi / 2)
 
             zmp = weight * left_foot_pos[:2] + (1 - weight) * right_foot_pos[:2]
 
@@ -336,6 +330,84 @@ class PositionControlWalkingController:
             "zmp_actual": self._estimate_zmp_actual(),
         }
 
+    def _update_reference_frame(self, dt: float, base_pos: Tuple[float, float, float]) -> None:
+        """
+        Advance nominal walking frame using desired forward velocity and lateral recentering.
+        """
+        if not self.params.enable_walking:
+            return
+
+        self.reference_xy[0] += self._desired_forward_velocity * dt
+        lat_gain = 1.5
+        self.reference_xy[1] += (-lat_gain * base_pos[1]) * dt
+        self.reference_xy[1] = np.clip(
+            self.reference_xy[1],
+            -self._lateral_bias_limit,
+            self._lateral_bias_limit,
+        )
+
+    def _compute_zmp_command(
+        self, zmp_desired: np.ndarray, zmp_actual: np.ndarray, base_pos: Tuple[float, float, float]
+    ) -> np.ndarray:
+        """
+        Apply feedback and lateral bias to the desired ZMP target.
+        """
+        zmp_error = zmp_desired - zmp_actual
+        zmp_correction = self.params.zmp_feedback_gain * zmp_error
+        zmp_correction = np.clip(
+            zmp_correction,
+            -self.params.zmp_correction_limit,
+            self.params.zmp_correction_limit,
+        )
+        zmp_command = zmp_desired + zmp_correction
+
+        # Lateral recentering toward midline based on base_y
+        lateral_bias_gain = 0.20
+        lateral_bias_limit = 0.04
+        lat_bias = -lateral_bias_gain * base_pos[1]
+        lat_bias = np.clip(lat_bias, -lateral_bias_limit, lateral_bias_limit)
+        zmp_command[1] += lat_bias
+        return zmp_command
+
+    def _apply_swing_straightening(
+        self,
+        left_foot_target_world: np.ndarray,
+        right_foot_target_world: np.ndarray,
+        contacts: Tuple[bool, bool],
+        base_pos: Tuple[float, float, float],
+        base_yaw: float,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Nudge swing foot targets for yaw/lateral straightening.
+        """
+        yaw_correction_gain = 0.05   # Heading correction (reduced)
+        lateral_correction_gain = 0.10  # Soft lateral drift correction
+        forward_yaw_gain = 0.0      # Disable x-shift from yaw for simplicity
+        forward_lat_gain = 0.05     # Mild forward foot bias from lateral error
+        yaw_shift = -yaw_correction_gain * base_yaw
+        lat_shift = -lateral_correction_gain * base_pos[1]
+
+        left_contact, right_contact = contacts
+        swing_y = self.params.gait.stance_width / 2.0
+        if not left_contact:
+            left_foot_target_world = np.array(
+                [
+                    left_foot_target_world[0] + forward_yaw_gain * (-base_yaw) - forward_lat_gain * base_pos[1],
+                    swing_y + yaw_shift + lat_shift,
+                    left_foot_target_world[2],
+                ]
+            )
+        if not right_contact:
+            right_foot_target_world = np.array(
+                [
+                    right_foot_target_world[0] + forward_yaw_gain * (-base_yaw) - forward_lat_gain * base_pos[1],
+                    -swing_y + yaw_shift + lat_shift,
+                    right_foot_target_world[2],
+                ]
+            )
+
+        return left_foot_target_world, right_foot_target_world
+
     def update(self, dt: float) -> Optional[Dict]:
         """
         Update walking controller
@@ -355,18 +427,11 @@ class PositionControlWalkingController:
         self.time += dt
 
         # Current base state for reference anchoring and diagnostics
-        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
+        base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
 
         # Advance nominal walking frame using desired forward velocity to avoid
         # targets chasing instantaneous base drift.
-        if self.params.enable_walking:
-            self.reference_xy[0] += self._desired_forward_velocity * dt
-            # Integrate lateral bias to recenter base y around 0 in the reference frame
-            lat_gain = 1.5
-            self.reference_xy[1] += (-lat_gain * base_pos[1]) * dt
-            self.reference_xy[1] = np.clip(self.reference_xy[1],
-                                           -self._lateral_bias_limit,
-                                           self._lateral_bias_limit)
+        self._update_reference_frame(dt, base_pos)
 
         # Update state estimate (CoM) for feedback/planner sync
         com_pos_est, com_vel_est = self._update_state_estimate(dt)
@@ -395,45 +460,17 @@ class PositionControlWalkingController:
 
         # Feedback: adjust ZMP target based on estimated ZMP error
         zmp_actual = self._estimate_zmp_actual()
-        zmp_error = zmp_desired - zmp_actual
-        zmp_correction = self.params.zmp_feedback_gain * zmp_error
-        zmp_correction = np.clip(zmp_correction,
-                                 -self.params.zmp_correction_limit,
-                                 self.params.zmp_correction_limit)
-        zmp_command = zmp_desired + zmp_correction
-
-        # Lateral recentering (simple): bias ZMP toward midline based on base_y
-        lateral_bias_gain = 0.20
-        lateral_bias_limit = 0.04
-        base_pos, _ = p.getBasePositionAndOrientation(self.robot_id)
-        lat_bias = -lateral_bias_gain * base_pos[1]
-        lat_bias = np.clip(lat_bias, -lateral_bias_limit, lateral_bias_limit)
-        zmp_command[1] += lat_bias
+        zmp_command = self._compute_zmp_command(zmp_desired, zmp_actual, base_pos)
 
         # Yaw/lateral straightening: nudge swing foot targets toward midline/opposite drift
-        yaw_correction_gain = 0.05   # Heading correction (reduced)
-        lateral_correction_gain = 0.10  # Soft lateral drift correction
-        forward_yaw_gain = 0.0      # Disable x-shift from yaw for simplicity
-        forward_lat_gain = 0.05     # Mild forward foot bias from lateral error
-        yaw_to_y_gain = 0.02        # Small yaw-driven lateral foot shift to straighten heading
-        base_pos, base_orn = p.getBasePositionAndOrientation(self.robot_id)
         base_yaw = p.getEulerFromQuaternion(base_orn)[2]
-        yaw_shift = -yaw_correction_gain * base_yaw
-        lat_shift = -lateral_correction_gain * base_pos[1]
-        # Apply corrections only to swing feet
-        left_contact, right_contact = contacts
-        # Enforce symmetric lateral anchors during swing around stance width midline
-        swing_y = self.params.gait.stance_width / 2.0
-        if not left_contact:
-            left_foot_target_world = np.array([left_foot_target_world[0] + forward_yaw_gain * (-base_yaw),
-                                               swing_y + yaw_shift + lat_shift,
-                                               left_foot_target_world[2]])
-            left_foot_target_world[0] += -forward_lat_gain * base_pos[1]
-        if not right_contact:
-            right_foot_target_world = np.array([right_foot_target_world[0] + forward_yaw_gain * (-base_yaw),
-                                                -swing_y + yaw_shift + lat_shift,
-                                                right_foot_target_world[2]])
-            right_foot_target_world[0] += -forward_lat_gain * base_pos[1]
+        left_foot_target_world, right_foot_target_world = self._apply_swing_straightening(
+            left_foot_target_world,
+            right_foot_target_world,
+            contacts,
+            base_pos,
+            base_yaw,
+        )
 
         # Lightweight diagnostics to debug drift/target alignment
         if self.time >= self._next_diag_print and self.time <= 15.0:
