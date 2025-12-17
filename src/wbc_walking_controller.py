@@ -16,6 +16,7 @@ import pybullet as p
 from typing import Dict, Tuple, Optional
 from dataclasses import dataclass
 
+from robot_constants import STANDING_CONFIG, standing_config_copy
 from gait_generator import GaitGenerator, GaitParams
 from wbc_controller import WholeBodyController, WBCParams
 from wbc_tasks import (
@@ -524,18 +525,7 @@ class WBCWalkingController:
     def _get_posture_targets(self) -> np.ndarray:
         """Standing posture targets in actuated joint order"""
         if self._posture_targets is None:
-            standing_config = {
-                'leg_l1_joint': -0.1,
-                'leg_l2_joint': 0.0,
-                'leg_l3_joint': 0.0,
-                'leg_l4_joint': 0.0,
-                'leg_l5_joint': 0.0,
-                'leg_r1_joint': 0.1,
-                'leg_r2_joint': 0.0,
-                'leg_r3_joint': 0.0,
-                'leg_r4_joint': 0.0,
-                'leg_r5_joint': 0.0,
-            }
+            standing_config = standing_config_copy()
             targets = []
             for idx in self.inv_dyn._actuated_joints:
                 joint_name = self.inv_dyn._joint_names.get(idx)
@@ -806,18 +796,7 @@ class WBCWalkingController:
             Dictionary with {joint_name: {'mode': 'torque'|'position', 'value': float}}
         """
         # Get standing posture targets
-        standing_config = {
-            'leg_l1_joint': -0.1,
-            'leg_l2_joint': 0.0,
-            'leg_l3_joint': 0.0,
-            'leg_l4_joint': 0.0,
-            'leg_l5_joint': 0.0,
-            'leg_r1_joint': 0.1,
-            'leg_r2_joint': 0.0,
-            'leg_r3_joint': 0.0,
-            'leg_r4_joint': 0.0,
-            'leg_r5_joint': 0.0,
-        }
+        standing_config = STANDING_CONFIG
 
         # Map torques array to dict
         torques_dict = self._map_torques_to_dict(torques_array)

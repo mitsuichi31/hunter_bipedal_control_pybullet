@@ -8,6 +8,8 @@ import pybullet as p
 import pybullet_data
 import numpy as np
 
+from robot_constants import BASE_HEIGHT, STANDING_CONFIG
+
 
 def test_configuration(config, base_height):
     """Test if a configuration is stable"""
@@ -53,7 +55,7 @@ p.setAdditionalSearchPath(pybullet_data.getDataPath())
 import os
 script_dir = os.path.dirname(os.path.abspath(__file__))
 urdf_path = os.path.join(script_dir, '../models/urdf/hunter.urdf')
-robot_id = p.loadURDF(urdf_path, [0, 0, 0.5])
+robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT])
 
 print("=" * 70)
 print("Finding Stable Standing Configuration for Hunter Robot")
@@ -75,13 +77,8 @@ configs_to_test = [
     },
     {
         'name': 'Symmetric straight legs',
-        'config': {
-            'leg_l1_joint': -0.1, 'leg_l2_joint': 0.0, 'leg_l3_joint': 0.0,
-            'leg_l4_joint': 0.0, 'leg_l5_joint': 0.0,
-            'leg_r1_joint': 0.1, 'leg_r2_joint': 0.0, 'leg_r3_joint': 0.0,
-            'leg_r4_joint': 0.0, 'leg_r5_joint': 0.0,
-        },
-        'base_height': 0.5
+        'config': STANDING_CONFIG,
+        'base_height': BASE_HEIGHT
     },
     {
         'name': 'Small knee bend',

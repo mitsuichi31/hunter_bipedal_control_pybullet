@@ -14,20 +14,8 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 
+from robot_constants import BASE_HEIGHT, FOOT_JOINTS, standing_config_copy
 from position_control_walking import PositionControlWalkingController, WalkingControllerParams
-
-STANDING_CONFIG = {
-    "leg_l1_joint": -0.1,
-    "leg_l2_joint": 0.0,
-    "leg_l3_joint": 0.0,
-    "leg_l4_joint": 0.0,
-    "leg_l5_joint": 0.0,
-    "leg_r1_joint": 0.1,
-    "leg_r2_joint": 0.0,
-    "leg_r3_joint": 0.0,
-    "leg_r4_joint": 0.0,
-    "leg_r5_joint": 0.0,
-}
 
 
 def _setup_robot() -> Tuple[int, Dict[str, int]]:
@@ -41,7 +29,7 @@ def _setup_robot() -> Tuple[int, Dict[str, int]]:
     plane_id = p.loadURDF("plane.urdf")
 
     urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, [0, 0, 0.679], useFixedBase=False)
+    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     joint_dict: Dict[str, int] = {}
     for i in range(p.getNumJoints(robot_id)):
@@ -50,12 +38,13 @@ def _setup_robot() -> Tuple[int, Dict[str, int]]:
             joint_dict[name] = i
 
     # Set initial straight-leg stance.
-    for joint_name, angle in STANDING_CONFIG.items():
+    standing_config = standing_config_copy()
+    for joint_name, angle in standing_config.items():
         p.resetJointState(robot_id, joint_dict[joint_name], angle)
 
     # Reduce foot slip during the regression to stabilize forward steps.
     p.changeDynamics(plane_id, -1, lateralFriction=1.0)
-    for foot_joint in ("leg_l5_joint", "leg_r5_joint"):
+    for foot_joint in FOOT_JOINTS:
         p.changeDynamics(robot_id, joint_dict[foot_joint], lateralFriction=1.0)
 
     return robot_id, joint_dict

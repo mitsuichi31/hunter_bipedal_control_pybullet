@@ -7,6 +7,8 @@ import sys
 import os
 import numpy as np
 
+from robot_constants import BASE_HEIGHT
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from simulation_env import HunterSimulation
@@ -27,7 +29,7 @@ def test_walking_with_diagnostics():
 
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
     sim.connect()
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 
     # Create components
     ik_solver = BipedalIKSolver(sim.robot_id, sim.joint_dict)

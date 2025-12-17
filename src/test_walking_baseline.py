@@ -18,6 +18,7 @@ import time
 import gc
 from dataclasses import dataclass, asdict
 
+from robot_constants import BASE_HEIGHT, standing_config_copy
 from simulation_env import HunterSimulation
 from wbc_walking_controller import WBCWalkingController, WBCWalkingParams
 from wbc_controller import WBCParams
@@ -70,22 +71,11 @@ class WalkingTestSuite:
         urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
         sim = HunterSimulation(urdf_path=urdf_path, use_gui=self.use_gui, dt=0.001)
         sim.connect()
-        sim.load_robot(start_position=[0, 0, 0.679])
+        sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 
         # Standing configuration
-        standing_config = {
-            'leg_l1_joint': -0.1,
-            'leg_l2_joint': 0.0,
-            'leg_l3_joint': 0.0,
-            'leg_l4_joint': 0.0,
-            'leg_l5_joint': 0.0,
-            'leg_r1_joint': 0.1,
-            'leg_r2_joint': 0.0,
-            'leg_r3_joint': 0.0,
-            'leg_r4_joint': 0.0,
-            'leg_r5_joint': 0.0,
-        }
-        sim.reset_robot(position=[0, 0, 0.679], joint_positions=standing_config)
+        standing_config = standing_config_copy()
+        sim.reset_robot(position=[0, 0, BASE_HEIGHT], joint_positions=standing_config)
 
         # Ultra-conservative gait parameters
         gait_params = GaitParams(
@@ -478,13 +468,8 @@ class WalkingTestSuite:
                 ])
 
                 # Reset with perturbation
-                standing_config = {
-                    'leg_l1_joint': -0.1, 'leg_l2_joint': 0.0, 'leg_l3_joint': 0.0,
-                    'leg_l4_joint': 0.0, 'leg_l5_joint': 0.0,
-                    'leg_r1_joint': 0.1, 'leg_r2_joint': 0.0, 'leg_r3_joint': 0.0,
-                    'leg_r4_joint': 0.0, 'leg_r5_joint': 0.0,
-                }
-                sim.reset_robot(position=[0, 0, 0.679], orientation=perturbed_orn,
+                standing_config = standing_config_copy()
+                sim.reset_robot(position=[0, 0, BASE_HEIGHT], orientation=perturbed_orn,
                               joint_positions=standing_config)
 
                 controller.start()

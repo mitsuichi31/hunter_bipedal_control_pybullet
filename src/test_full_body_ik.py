@@ -14,6 +14,7 @@ Date: 2025-11-25
 import numpy as np
 import pybullet as p
 import sys
+from robot_constants import BASE_HEIGHT
 from full_body_ik import FullBodyIKSolver, FullBodyIKParams
 
 
@@ -26,7 +27,7 @@ def setup_robot():
 
     # Load robot
     urdf_path = "../models/urdf/hunter.urdf"
-    robot_id = p.loadURDF(urdf_path, [0, 0, 0.679], useFixedBase=False)
+    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     # Get joint info
     joint_dict = {}

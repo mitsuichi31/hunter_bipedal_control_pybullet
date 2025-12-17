@@ -18,6 +18,7 @@ from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
 from gait_generator import GaitGenerator, GaitParams
+from robot_constants import STANDING_CONFIG, standing_config_copy
 from com_planner_simple import SimpleCoMPlanner2D, SimpleCoMPlannerParams
 from full_body_ik import FullBodyIKSolver, FullBodyIKParams
 
@@ -480,16 +481,4 @@ class PositionControlWalkingController:
 
     def _get_standing_commands(self) -> Dict:
         """Get standing position commands (straight legs)"""
-        standing_config = {
-            'leg_l1_joint': -0.1,
-            'leg_l2_joint': 0.0,
-            'leg_l3_joint': 0.0,
-            'leg_l4_joint': 0.0,
-            'leg_l5_joint': 0.0,
-            'leg_r1_joint': 0.1,
-            'leg_r2_joint': 0.0,
-            'leg_r3_joint': 0.0,
-            'leg_r4_joint': 0.0,
-            'leg_r5_joint': 0.0,
-        }
-        return standing_config
+        return standing_config_copy()

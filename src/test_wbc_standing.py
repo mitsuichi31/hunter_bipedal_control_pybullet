@@ -21,6 +21,7 @@ import numpy as np
 import os
 import time
 
+from robot_constants import BASE_HEIGHT, standing_config_copy
 from wbc_controller import WholeBodyController, WBCParams
 from mpc_wbc_controller import MPCWBCController, MPCParams
 from stability_metrics import compute_com, compute_zmp
@@ -41,7 +42,7 @@ def test_wbc_parameters():
 
     # Load robot
     urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, [0, 0, 0.679])
+    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT])
 
     print(f"\n✓ Robot loaded (ID: {robot_id})")
 
@@ -151,18 +152,7 @@ def test_wbc_parameters():
     print("-" * 80)
 
     # Reset robot to standing configuration
-    standing_config = {
-        'leg_l1_joint': -0.1,
-        'leg_l2_joint': 0.0,
-        'leg_l3_joint': 0.0,
-        'leg_l4_joint': 0.0,
-        'leg_l5_joint': 0.0,
-        'leg_r1_joint': 0.1,
-        'leg_r2_joint': 0.0,
-        'leg_r3_joint': 0.0,
-        'leg_r4_joint': 0.0,
-        'leg_r5_joint': 0.0,
-    }
+    standing_config = standing_config_copy()
 
     for joint_name, angle in standing_config.items():
         if joint_name in joint_dict:

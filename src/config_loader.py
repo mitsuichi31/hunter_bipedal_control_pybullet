@@ -2,10 +2,12 @@
 Configuration loader for simulation parameters
 """
 
-import yaml
 import os
+import yaml
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
+
+from robot_constants import BASE_HEIGHT
 from gait_generator import GaitParams
 from planning.reference_manager import ReferenceTargets
 
@@ -31,7 +33,7 @@ class SimulationConfig:
 
         # Parse initial state
         init_state = config_dict.get('initial_state', {})
-        self.initial_position = init_state.get('position', [0.0, 0.0, 0.5])
+        self.initial_position = init_state.get('position', [0.0, 0.0, BASE_HEIGHT])
         self.initial_orientation = init_state.get('orientation', [0.0, 0.0, 0.0, 1.0])
 
         # Parse gait parameters

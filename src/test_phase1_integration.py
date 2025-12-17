@@ -17,6 +17,7 @@ import numpy as np
 import os
 import time
 
+from robot_constants import BASE_HEIGHT
 from stability_metrics import compute_com, compute_zmp, compute_com_velocity
 from gravity_compensation import GravityCompensation, estimate_torque_reduction
 from balance_controller import ZMPBalanceController
@@ -37,7 +38,7 @@ def test_phase1_integration():
 
     # Load robot
     urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, [0, 0, 0.679])
+    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT])
 
     print(f"\n✓ Robot loaded (ID: {robot_id})")
 

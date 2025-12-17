@@ -15,6 +15,7 @@ import numpy as np
 import pybullet as p
 import time
 
+from robot_constants import BASE_HEIGHT, standing_config_copy
 from contact_state_machine import ContactStateMachine, ContactStateParams, ContactPhase
 from simulation_env import HunterSimulation
 
@@ -139,22 +140,11 @@ def test_contact_detection_with_pybullet():
     # Create simulation (headless)
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
     sim.connect()
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 
     # Set robot to standing configuration
-    standing_config = {
-        'leg_l1_joint': -0.1,
-        'leg_l2_joint': 0.0,
-        'leg_l3_joint': 0.0,
-        'leg_l4_joint': 0.0,
-        'leg_l5_joint': 0.0,
-        'leg_r1_joint': 0.1,
-        'leg_r2_joint': 0.0,
-        'leg_r3_joint': 0.0,
-        'leg_r4_joint': 0.0,
-        'leg_r5_joint': 0.0,
-    }
-    sim.reset_robot(position=[0, 0, 0.679], joint_positions=standing_config)
+    standing_config = standing_config_copy()
+    sim.reset_robot(position=[0, 0, BASE_HEIGHT], joint_positions=standing_config)
 
     # Initialize contact state machine
     params = ContactStateParams(

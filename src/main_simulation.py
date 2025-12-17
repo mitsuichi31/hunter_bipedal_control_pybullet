@@ -15,6 +15,7 @@ import numpy as np
 import argparse
 import pybullet as p
 
+from robot_constants import BASE_HEIGHT, STANDING_CONFIG, standing_config_copy
 from simulation_env import HunterSimulation
 from pd_controller import MultiJointPDController
 from inverse_kinematics import BipedalIKSolver
@@ -220,7 +221,7 @@ def run_standing_test_mpc(duration: float = 10.0, use_gui: bool = True):
         command_limits=command_limits,
     )
     sim.connect(enable_stable_contacts=True)
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
     sim.set_contact_properties(
         lateral_friction=physics_params.get("lateral_friction", 1.0),
         spinning_friction=0.2,
@@ -285,7 +286,7 @@ def run_standing_test_mpc(duration: float = 10.0, use_gui: bool = True):
             )
 
     # Set initial joint positions
-    sim.reset_robot(position=[0, 0, 0.679], joint_positions=target_positions)
+    sim.reset_robot(position=[0, 0, BASE_HEIGHT], joint_positions=target_positions)
 
     # Enable position control
     print("Enabling position control with MPC updates...")
@@ -445,8 +446,8 @@ def run_standing_test(duration: float = 10.0, use_gui: bool = True):
         command_limits=command_limits,
     )
     sim.connect()
-    # Start at appropriate height for standing (corrected from 0.40 to 0.679)
-    sim.load_robot(start_position=[0, 0, 0.679])
+    # Start at appropriate height for standing (canonical BASE_HEIGHT)
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
     # Use default PyBullet contact params (previous stable baseline)
 
     observer = Observer()
@@ -465,21 +466,7 @@ def run_standing_test(duration: float = 10.0, use_gui: bool = True):
 
     # Use stable standing configuration
     # Straight legs with symmetric hip roll (feet on ground at z=0)
-    target_positions = {
-        # Left leg - straight with slight outward roll
-        'leg_l1_joint': -0.1,     # Hip roll - open left leg outward
-        'leg_l2_joint': 0.0,      # Hip yaw - neutral
-        'leg_l3_joint': 0.0,      # Hip pitch - straight
-        'leg_l4_joint': 0.0,      # Knee - straight
-        'leg_l5_joint': 0.0,      # Ankle - straight
-
-        # Right leg - straight with slight outward roll
-        'leg_r1_joint': 0.1,      # Hip roll - open right leg outward
-        'leg_r2_joint': 0.0,      # Hip yaw - neutral
-        'leg_r3_joint': 0.0,      # Hip pitch - straight
-        'leg_r4_joint': 0.0,      # Knee - straight
-        'leg_r5_joint': 0.0,      # Ankle - straight
-    }
+    target_positions = standing_config_copy()
 
     print("Target joint positions (manual configuration):")
     for joint_name, angle in target_positions.items():
@@ -499,7 +486,7 @@ def run_standing_test(duration: float = 10.0, use_gui: bool = True):
             )
 
     # Set initial joint positions
-    sim.reset_robot(position=[0, 0, 0.679], joint_positions=target_positions)
+    sim.reset_robot(position=[0, 0, BASE_HEIGHT], joint_positions=target_positions)
 
     # Enable position control
     print("Enabling position control motors...")
@@ -678,7 +665,7 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     )
     sim.connect(enable_stable_contacts=enable_stable_contacts)
 
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 
     # Set contact properties for better foot-ground interaction
     sim.set_contact_properties(
@@ -689,18 +676,7 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
     )
 
     # Stable standing configuration (straight legs, feet on ground)
-    standing_config = {
-        'leg_l1_joint': -0.1,
-        'leg_l2_joint': 0.0,
-        'leg_l3_joint': 0.0,
-        'leg_l4_joint': 0.0,
-        'leg_l5_joint': 0.0,
-        'leg_r1_joint': 0.1,
-        'leg_r2_joint': 0.0,
-        'leg_r3_joint': 0.0,
-        'leg_r4_joint': 0.0,
-        'leg_r5_joint': 0.0,
-    }
+    standing_config = standing_config_copy()
 
     # Disable default motors
     for joint_name in standing_config.keys():
@@ -714,7 +690,7 @@ def run_wbc_test(duration: float = 10.0, use_gui: bool = True):
             )
 
     # Set initial positions
-    sim.reset_robot(position=[0, 0, 0.679], joint_positions=standing_config)
+    sim.reset_robot(position=[0, 0, BASE_HEIGHT], joint_positions=standing_config)
 
     # Initialize MPC + WBC Controller
     print("Initializing MPC + WBC Controller...")
@@ -954,7 +930,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
         command_limits=command_limits,
     )
     sim.connect()
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
     sim.set_contact_properties(
         lateral_friction=physics_params.get("lateral_friction", 1.0),
         spinning_friction=0.2,
@@ -966,18 +942,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     observer.reset()
 
     # Set robot to standing configuration (required for IK solver initialization)
-    standing_config = {
-        'leg_l1_joint': -0.1,
-        'leg_l2_joint': 0.0,
-        'leg_l3_joint': 0.0,
-        'leg_l4_joint': 0.0,
-        'leg_l5_joint': 0.0,
-        'leg_r1_joint': 0.1,
-        'leg_r2_joint': 0.0,
-        'leg_r3_joint': 0.0,
-        'leg_r4_joint': 0.0,
-        'leg_r5_joint': 0.0,
-    }
+    standing_config = standing_config_copy()
     for joint_name, angle in standing_config.items():
         joint_idx = sim.get_joint_index(joint_name)
         if joint_idx is not None:
@@ -998,12 +963,12 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
         step_period=2.0,       # 2s per step
         double_support_ratio=0.7,
         stance_width=0.18,
-        body_height=0.679,
+        body_height=BASE_HEIGHT,
     )
 
     # Reinforced ZMP/CoM planner to hold nominal height
     com_planning = SimpleCoMPlannerParams(
-        com_height=0.679,
+        com_height=BASE_HEIGHT,
         zmp_kp=26.0,   # Higher ZMP stiffness
         zmp_kd=8.0,    # More damping
         preview_time=0.5,
@@ -1016,7 +981,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
         com_weight=80.0,          # Prioritize CoM tracking
         orientation_weight=40.0,  # Keep trunk more upright
         regularization_weight=1.0,
-        com_height=0.679,
+        com_height=BASE_HEIGHT,
         max_roll_pitch=0.087,     # Stricter upright bound (~5.0 deg)
         base_height_min=0.67,
         base_height_max=0.681,
@@ -1198,13 +1163,13 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
     print()
     print(f"Final position: [{final_pos[0]:+.3f}, {final_pos[1]:+.3f}, {final_pos[2]:.3f}]m")
     print(f"Final orientation: Roll={np.degrees(final_euler[0]):+.2f}°, Pitch={np.degrees(final_euler[1]):+.2f}°")
-    print(f"Final height: {final_pos[2]:.3f}m (nominal: 0.679m)")
+    print(f"Final height: {final_pos[2]:.3f}m (nominal: {BASE_HEIGHT:.3f}m)")
     print()
 
     # Assessment
     roll_deg = abs(np.degrees(final_euler[0]))
     pitch_deg = abs(np.degrees(final_euler[1]))
-    height_error = abs(final_pos[2] - 0.679)
+    height_error = abs(final_pos[2] - BASE_HEIGHT)
 
     success = (roll_deg < 5.0 and pitch_deg < 5.0 and height_error < 0.05)
 

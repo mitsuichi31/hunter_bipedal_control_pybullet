@@ -15,6 +15,8 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 
+from robot_constants import BASE_HEIGHT
+
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,7 +38,7 @@ def test_ik_solver():
     # Create simulation (no GUI)
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
     sim.connect()
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 
     # Create IK solver
     ik_solver = BipedalIKSolver(sim.robot_id, sim.joint_dict)
@@ -64,7 +66,7 @@ def test_ik_solver():
 
     # Check base height
     base_pos, _, _, _ = sim.get_base_state()
-    print(f"\n  Base height: {base_pos[2]:.3f} m (should be ~0.679m)")
+    print(f"\n  Base height: {base_pos[2]:.3f} m (should be ~{BASE_HEIGHT:.3f}m)")
 
     # Test 1b: One foot raised (swing phase)
     print("\nTest 1b: Left foot raised (simulating swing)")
@@ -144,7 +146,7 @@ def test_coordinate_frames():
     # Create simulation (no GUI)
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
     sim.connect()
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 
     # Create components
     ik_solver = BipedalIKSolver(sim.robot_id, sim.joint_dict)
@@ -233,7 +235,7 @@ def test_correct_implementation():
     # Create simulation (no GUI)
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
     sim.connect()
-    sim.load_robot(start_position=[0, 0, 0.679])
+    sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
 
     # Create components
     ik_solver = BipedalIKSolver(sim.robot_id, sim.joint_dict)

@@ -460,18 +460,7 @@ class MPCWBCController:
         all_torques = self._compute_torques_from_forces(ground_forces, foot_contacts)
 
         # Get standing configuration positions
-        standing_config = {
-            'leg_l1_joint': -0.1,
-            'leg_l2_joint': 0.0,
-            'leg_l3_joint': 0.0,
-            'leg_l4_joint': 0.0,
-            'leg_l5_joint': 0.0,
-            'leg_r1_joint': 0.1,
-            'leg_r2_joint': 0.0,
-            'leg_r3_joint': 0.0,
-            'leg_r4_joint': 0.0,
-            'leg_r5_joint': 0.0,
-        }
+        from robot_constants import STANDING_CONFIG  # Local import to avoid cycles
 
         # Build hybrid commands
         hybrid_commands = {}
@@ -486,7 +475,7 @@ class MPCWBCController:
                 # Hip/Knee: use position control
                 hybrid_commands[joint_name] = {
                     'mode': 'position',
-                    'value': standing_config.get(joint_name, 0.0)
+                    'value': STANDING_CONFIG.get(joint_name, 0.0)
                 }
             else:
                 # Unknown joint, default to zero

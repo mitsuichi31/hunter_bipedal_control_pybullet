@@ -9,7 +9,7 @@ simulation:
 
 # Robot initial state
 initial_state:
-  position: [0.0, 0.0, 0.5]            # Base position [x, y, z]
+  position: [0.0, 0.0, 0.679]          # Base position [x, y, z] (canonical straight-leg height)
   orientation: [0.0, 0.0, 0.0, 1.0]    # Base orientation quaternion [x, y, z, w]
 
 # Gait parameters

@@ -14,6 +14,7 @@ import pybullet as p
 import pybullet_data
 import numpy as np
 import os
+from robot_constants import BASE_HEIGHT
 
 from inverse_dynamics import InverseDynamics
 
@@ -32,7 +33,7 @@ def test_inverse_dynamics():
 
     # Load robot
     urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, [0, 0, 0.679])
+    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT])
 
     print(f"\n✓ Robot loaded (ID: {robot_id})")
 

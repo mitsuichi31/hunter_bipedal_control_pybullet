@@ -20,6 +20,7 @@ import time as time_module
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from robot_constants import BASE_HEIGHT, standing_config_copy
 from position_control_walking import PositionControlWalkingController, WalkingControllerParams
 from gait_generator import GaitParams
 
@@ -43,8 +44,7 @@ def setup_robot(mass_scale=1.0):
 
     # Load robot at correct height
     urdf_path = "../models/urdf/hunter.urdf"
-    base_height = 0.679
-    robot_id = p.loadURDF(urdf_path, [0, 0, base_height], useFixedBase=False)
+    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     # Apply mass scaling if requested
     if mass_scale != 1.0:
@@ -74,18 +74,7 @@ def setup_robot(mass_scale=1.0):
             joint_dict[joint_name] = i
 
     # Set initial configuration (straight legs, symmetric stance)
-    standing_config = {
-        'leg_l1_joint': -0.1,
-        'leg_l2_joint': 0.0,
-        'leg_l3_joint': 0.0,
-        'leg_l4_joint': 0.0,
-        'leg_l5_joint': 0.0,
-        'leg_r1_joint': 0.1,
-        'leg_r2_joint': 0.0,
-        'leg_r3_joint': 0.0,
-        'leg_r4_joint': 0.0,
-        'leg_r5_joint': 0.0,
-    }
+    standing_config = standing_config_copy()
 
     for joint_name, angle in standing_config.items():
         joint_idx = joint_dict[joint_name]

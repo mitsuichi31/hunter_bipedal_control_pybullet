@@ -12,6 +12,7 @@ import numpy as np
 import os
 import sys
 
+from robot_constants import BASE_HEIGHT
 from stability_metrics import StabilityMetrics
 
 
@@ -29,7 +30,7 @@ def test_com_accuracy():
 
     # Load robot
     urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, [0, 0, 0.679])
+    robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT])
 
     print(f"\n✓ Robot loaded (ID: {robot_id})")
 

@@ -8,6 +8,8 @@ import sys
 import pybullet as p
 import pybullet_data
 
+from robot_constants import BASE_HEIGHT
+
 # Add src to path
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -26,7 +28,7 @@ def test_gravity_diagnostics():
 
     # Load robot
     urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
-    robot_id = p.loadURDF(urdf_path, basePosition=[0, 0, 0.679])
+    robot_id = p.loadURDF(urdf_path, basePosition=[0, 0, BASE_HEIGHT])
 
     # Create gravity compensation
     gc = GravityCompensation(robot_id)
