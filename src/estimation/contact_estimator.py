@@ -18,8 +18,8 @@ class ContactEstimator:
     Estimates foot contact state using normal force thresholds with hysteresis.
     """
 
-    def __init__(self, params: ContactEstimatorParams = ContactEstimatorParams()):
-        self.params = params
+    def __init__(self, params: ContactEstimatorParams | None = None):
+        self.params = params or ContactEstimatorParams()
         self.state: List[bool] = []
 
     def reset(self, num_feet: int):

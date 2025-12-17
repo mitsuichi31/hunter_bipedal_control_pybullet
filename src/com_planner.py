@@ -47,6 +47,8 @@ class CoMPlannerParams:
         """Compute derived parameters"""
         self.preview_steps = int(self.preview_horizon / self.dt)
         self.omega = np.sqrt(self.gravity / self.com_height)  # Natural frequency
+        # Useful derived constants for LIPM relation
+        self.omega2 = self.omega ** 2
 
 
 class PreviewCoMPlanner:
@@ -104,7 +106,7 @@ class PreviewCoMPlanner:
             u = ẍdot       (jerk - third derivative)
             p = x - ẍ/omega^2  (ZMP from LIPM)
         """
-        omega2 = self.params.omega ** 2
+        omega2 = self.params.omega2
         dt = self.params.dt
 
         # Continuous-time matrices
