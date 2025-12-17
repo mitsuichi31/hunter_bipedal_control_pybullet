@@ -20,6 +20,7 @@ import time as time_module
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import pytest
 from robot_constants import BASE_HEIGHT, standing_config_copy
 from position_control_walking import PositionControlWalkingController, WalkingControllerParams
 from gait_generator import GaitParams
@@ -43,7 +44,8 @@ def setup_robot(mass_scale=1.0):
     p.loadURDF("plane.urdf")
 
     # Load robot at correct height
-    urdf_path = "../models/urdf/hunter.urdf"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
     robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     # Apply mass scaling if requested
@@ -111,6 +113,10 @@ def get_robot_state(robot_id):
     }
 
 
+@pytest.mark.skipif(
+    os.environ.get("RUN_ROBUSTNESS") not in ("1", "true", "True"),
+    reason="Long-running robustness test; enable with RUN_ROBUSTNESS=1",
+)
 def test_extended_duration(duration=300.0):
     """
     Test 1: Extended Duration Walking
@@ -261,7 +267,11 @@ def test_extended_duration(duration=300.0):
     }
 
 
-def test_mass_uncertainty(mass_scale, duration=60.0):
+@pytest.mark.skipif(
+    os.environ.get("RUN_ROBUSTNESS") not in ("1", "true", "True"),
+    reason="Long-running robustness test; enable with RUN_ROBUSTNESS=1",
+)
+def test_mass_uncertainty(mass_scale: float = 1.0, duration: float = 60.0):
     """
     Test 2/3: Mass Uncertainty
 
@@ -384,6 +394,10 @@ def test_mass_uncertainty(mass_scale, duration=60.0):
     }
 
 
+@pytest.mark.skipif(
+    os.environ.get("RUN_ROBUSTNESS") not in ("1", "true", "True"),
+    reason="Long-running robustness test; enable with RUN_ROBUSTNESS=1",
+)
 def test_large_pushes(duration=30.0):
     """
     Test 4: Larger Magnitude Pushes

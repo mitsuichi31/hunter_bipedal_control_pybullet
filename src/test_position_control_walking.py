@@ -29,8 +29,8 @@ from gait_generator import GaitParams
 
 def setup_robot():
     """Initialize PyBullet and load robot"""
-    # Connect to PyBullet (GUI for visual debugging)
-    p.connect(p.GUI)
+    # Connect to PyBullet (headless for automated tests)
+    p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.setGravity(0, 0, -9.81)
     p.setTimeStep(0.001)
@@ -40,7 +40,7 @@ def setup_robot():
     p.loadURDF("plane.urdf")
 
     # Load robot at correct height
-    urdf_path = "../models/urdf/hunter.urdf"
+    urdf_path = os.path.join(os.path.dirname(__file__), "../models/urdf/hunter.urdf")
     robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     # Get joint info

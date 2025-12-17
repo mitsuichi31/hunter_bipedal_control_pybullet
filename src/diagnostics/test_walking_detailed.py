@@ -6,15 +6,21 @@ Detailed walking mode test with diagnostics
 import sys
 import os
 import numpy as np
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from robot_constants import BASE_HEIGHT
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from simulation_env import HunterSimulation
 from inverse_kinematics import BipedalIKSolver
 from gait_generator import GaitGenerator, GaitParams
 from pd_controller import MultiJointPDController
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_DIAGNOSTICS") not in ("1", "true", "True"),
+    reason="Diagnostics-only walking test; enable with RUN_DIAGNOSTICS=1",
+)
 
 
 def test_walking_with_diagnostics():
@@ -25,7 +31,7 @@ def test_walking_with_diagnostics():
 
     # Setup
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
+    urdf_path = os.path.join(script_dir, "../../models/urdf/hunter.urdf")
 
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
     sim.connect()

@@ -11,6 +11,7 @@ Author: Phase 4.2 Testing
 Date: 2025-11-25
 """
 
+import os
 import numpy as np
 import pybullet as p
 import sys
@@ -26,7 +27,8 @@ def setup_robot():
     p.setTimeStep(0.001)
 
     # Load robot
-    urdf_path = "../models/urdf/hunter.urdf"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
     robot_id = p.loadURDF(urdf_path, [0, 0, BASE_HEIGHT], useFixedBase=False)
 
     # Get joint info

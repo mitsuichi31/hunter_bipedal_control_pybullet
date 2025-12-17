@@ -14,15 +14,21 @@ import os
 import numpy as np
 import pybullet as p
 import pybullet_data
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from robot_constants import BASE_HEIGHT
 
 # Add src to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from inverse_kinematics import BipedalIKSolver
 from gait_generator import GaitGenerator, GaitParams
 from simulation_env import HunterSimulation
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_DIAGNOSTICS") not in ("1", "true", "True"),
+    reason="Diagnostics-only IK walking tests; enable with RUN_DIAGNOSTICS=1",
+)
 
 
 def test_ik_solver():
@@ -33,7 +39,7 @@ def test_ik_solver():
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
+    urdf_path = os.path.join(script_dir, "../../models/urdf/hunter.urdf")
 
     # Create simulation (no GUI)
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
@@ -141,7 +147,7 @@ def test_coordinate_frames():
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
+    urdf_path = os.path.join(script_dir, "../../models/urdf/hunter.urdf")
 
     # Create simulation (no GUI)
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
@@ -230,7 +236,7 @@ def test_correct_implementation():
 
     # Get URDF path
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
+    urdf_path = os.path.join(script_dir, "../../models/urdf/hunter.urdf")
 
     # Create simulation (no GUI)
     sim = HunterSimulation(urdf_path=urdf_path, dt=0.001, use_gui=False)
