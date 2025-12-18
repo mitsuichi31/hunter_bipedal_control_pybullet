@@ -95,6 +95,27 @@ def _score(tr: TrialResult) -> float:
     return float(tr.score_mean)
 
 
+def _success_rate(tr: TrialResult) -> float:
+    if tr.repeats <= 0:
+        return 0.0
+    return float(tr.success_count) / float(tr.repeats)
+
+
+def _best_key(tr: TrialResult) -> tuple:
+    """
+    Selection policy (practical/stable):
+      1) success_rate (DONE fraction)  [higher is better]
+      2) survival_min (worst-case)     [higher is better]
+      3) score_mean (average score)    [higher is better]
+      4) tilt_mean (tie-breaker)       [lower is better]
+    """
+    sr = _success_rate(tr)
+    sm = float(tr.survival_min)
+    sc = float(tr.score_mean)
+    tilt = float(tr.tilt_mean) if tr.tilt_mean is not None else 1e9
+    return (sr, sm, sc, -tilt)
+
+
 def _extract_single(
     log_path: str, compute_score_fn
 ) -> Tuple[str, Dict[str, Any], float, Optional[float], Optional[float], Optional[str]]:
@@ -350,11 +371,13 @@ def main() -> int:
 
         results.append(tr)
         print(
-            f"  {tr.status}  survival_mean={tr.survival_mean:.3f}  survival_min={tr.survival_min:.3f}  "
+            f"  {tr.status}  success_rate={_success_rate(tr):.2f}  "
+            f"survival_mean={tr.survival_mean:.3f}  survival_min={tr.survival_min:.3f}  "
             f"score_mean={tr.score_mean:.3f}  tilt_mean={tr.tilt_mean if tr.tilt_mean is not None else '-'}"
         )
 
-        if best is None or _score(tr) > _score(best):
+        # Best selection: success_rate -> survival_min -> score_mean -> tilt_mean
+        if best is None or _best_key(tr) > _best_key(best):
             best = tr
 
     if best is None:
@@ -389,6 +412,7 @@ def main() -> int:
     print("\n== Best ==")
     print("  params:", best.params)
     print("  status:", best.status)
+    print(f"  success_rate: {_success_rate(best):.2f} ({best.success_count}/{best.repeats})")
     print("  survival_mean:", best.survival_mean)
     print("  survival_min:", best.survival_min)
     print("  score_mean:", best.score_mean)
@@ -405,6 +429,7 @@ def main() -> int:
                     "status": best.status,
                     "repeats": best.repeats,
                     "success_count": best.success_count,
+                    "success_rate": _success_rate(best),
                     "survival_mean": best.survival_mean,
                     "survival_min": best.survival_min,
                     "score_mean": best.score_mean,
@@ -418,6 +443,7 @@ def main() -> int:
                         "status": r.status,
                         "repeats": r.repeats,
                         "success_count": r.success_count,
+                        "success_rate": _success_rate(r),
                         "survival_mean": r.survival_mean,
                         "survival_min": r.survival_min,
                         "score_mean": r.score_mean,
