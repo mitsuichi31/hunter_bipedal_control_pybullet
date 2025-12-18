@@ -23,6 +23,8 @@ class TorqueStageGains:
     # Gravity compensation (optional)
     use_gravity_comp: bool = False
     gravity_scale: float = 1.0
+    # Increase damping only during blend (warmup->hold transition).
+    kd_blend_factor: float = 1.0
 
 
 class TwoStagePostureController:
@@ -112,7 +114,8 @@ class TwoStagePostureController:
 
         if self._in_blend(t):
             a = self._blend_alpha(t)
-            tau_pd = self.tau_g.kp * (self.q_ref - obs.q) - self.tau_g.kd * obs.dq
+            kd_eff = float(self.tau_g.kd) * float(self.tau_g.kd_blend_factor)
+            tau_pd = self.tau_g.kp * (self.q_ref - obs.q) - kd_eff * obs.dq
             tau_ff = (tau_pd + self._gravity_ff(obs)) * a
             tau_ff = np.clip(tau_ff, -self.tau_g.tau_limit, self.tau_g.tau_limit)
 

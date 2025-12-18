@@ -42,3 +42,6 @@ controller:
     # Gravity compensation in hold stage (optional)
     use_gravity_comp: false
     gravity_scale: 1.0
+    # Increase torque damping only during blend (warmup->hold transition).
+    # 1.0 means "no change". Typical sweep: 1.0, 1.5, 2.0, 3.0
+    kd_blend_factor: 2.0

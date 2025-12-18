@@ -170,6 +170,7 @@ def main() -> int:
     ap.add_argument("--blend", default="0.0", help="Comma-separated blend_seconds candidates (two_stage)")
     ap.add_argument("--grav", default="0,1", help="Comma-separated use_gravity_comp candidates: 0 or 1 (two_stage)")
     ap.add_argument("--grav-scale", default="1.0", help="Comma-separated gravity_scale candidates (two_stage)")
+    ap.add_argument("--kd-blend", default="1.0", help="Comma-separated kd_blend_factor candidates (two_stage)")
 
     ap.add_argument("--kp", default="20,40,60,80,100,120", help="Comma-separated kp candidates (grid)")
     ap.add_argument("--kd", default="0.5,1.0,1.5,2.0,3.0,4.0", help="Comma-separated kd candidates (grid)")
@@ -199,16 +200,17 @@ def main() -> int:
     blends = _mk_grid(parse_floats(args.blend))
     grav_flags = [int(float(x)) for x in args.grav.split(",") if x.strip()]
     grav_scales = _mk_grid(parse_floats(args.grav_scale))
+    kd_blends = _mk_grid(parse_floats(args.kd_blend))
 
     planned_params: List[Dict[str, Any]] = []
 
     if args.mode == "grid":
-        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups, blends, grav_flags, grav_scales))
+        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups, blends, grav_flags, grav_scales, kd_blends))
         max_grid = max(1, args.trials)
         if len(all_params) > max_grid:
             step = max(1, len(all_params) // max_grid)
             all_params = all_params[::step][:max_grid]
-        for kp, kd, tau, dt, settle, warmup, blend, grav, gscale in all_params:
+        for kp, kd, tau, dt, settle, warmup, blend, grav, gscale, kd_blend in all_params:
             planned_params.append(
                 {
                     "kp": kp,
@@ -220,6 +222,7 @@ def main() -> int:
                     "blend_seconds": blend,
                     "use_gravity_comp": bool(int(grav)),
                     "gravity_scale": float(gscale),
+                    "kd_blend_factor": float(kd_blend),
                 }
             )
     else:
@@ -236,6 +239,7 @@ def main() -> int:
                     "blend_seconds": random.choice(blends),
                     "use_gravity_comp": bool(int(random.choice(grav_flags))),
                     "gravity_scale": float(random.choice(grav_scales)),
+                    "kd_blend_factor": float(random.choice(kd_blends)),
                 }
             )
 
@@ -275,6 +279,7 @@ def main() -> int:
                 p.get("use_gravity_comp", torque_block.get("use_gravity_comp", False))
             )
             torque_block["gravity_scale"] = float(p.get("gravity_scale", torque_block.get("gravity_scale", 1.0)))
+            torque_block["kd_blend_factor"] = float(p.get("kd_blend_factor", torque_block.get("kd_blend_factor", 1.0)))
             cfg_ctrl["torque"] = torque_block
         else:
             cfg_ctrl["kp"] = float(p["kp"])
@@ -405,6 +410,7 @@ def main() -> int:
             best.params.get("use_gravity_comp", torque_block.get("use_gravity_comp", False))
         )
         torque_block["gravity_scale"] = float(best.params.get("gravity_scale", torque_block.get("gravity_scale", 1.0)))
+        torque_block["kd_blend_factor"] = float(best.params.get("kd_blend_factor", torque_block.get("kd_blend_factor", 1.0)))
         best_cfg_ctrl["torque"] = torque_block
     else:
         best_cfg_ctrl["kp"] = float(best.params["kp"])

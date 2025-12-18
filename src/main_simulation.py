@@ -1304,6 +1304,7 @@ if __name__ == "__main__":
                     tau_limit=float(tau_cfg.get("tau_limit", 60.0)),
                     use_gravity_comp=bool(tau_cfg.get("use_gravity_comp", False)),
                     gravity_scale=float(tau_cfg.get("gravity_scale", 1.0)),
+                    kd_blend_factor=float(tau_cfg.get("kd_blend_factor", 1.0)),
                 ),
             )
         else:

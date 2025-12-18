@@ -31,6 +31,8 @@ class RunSummary:
     score: Optional[float]
     grav_on: Optional[bool]
     grav_scale: Optional[float]
+    blend_seconds: Optional[float]
+    kd_blend_factor: Optional[float]
     survival_time: Optional[float]
     tilt_max_abs: Optional[float]
     base_z_min: Optional[float]
@@ -86,6 +88,8 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
 
     grav_on = _safe_get(meta, ["controller", "torque", "use_gravity_comp"], default=None)
     grav_scale = _safe_get(meta, ["controller", "torque", "gravity_scale"], default=None)
+    blend_seconds = _safe_get(meta, ["controller", "blend_seconds"], default=None)
+    kd_blend_factor = _safe_get(meta, ["controller", "torque", "kd_blend_factor"], default=None)
     try:
         grav_on = bool(grav_on) if grav_on is not None else None
     except Exception:
@@ -94,6 +98,14 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
         grav_scale = float(grav_scale) if grav_scale is not None else None
     except Exception:
         grav_scale = None
+    try:
+        blend_seconds = float(blend_seconds) if blend_seconds is not None else None
+    except Exception:
+        blend_seconds = None
+    try:
+        kd_blend_factor = float(kd_blend_factor) if kd_blend_factor is not None else None
+    except Exception:
+        kd_blend_factor = None
 
     return RunSummary(
         path=path,
@@ -102,6 +114,8 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
         score=score,
         grav_on=grav_on,
         grav_scale=grav_scale,
+        blend_seconds=blend_seconds,
+        kd_blend_factor=kd_blend_factor,
         survival_time=float(st) if st is not None else None,
         tilt_max_abs=float(tilt) if tilt is not None else None,
         base_z_min=float(zmin) if zmin is not None else None,
@@ -151,6 +165,8 @@ def _print_table(rows: List[RunSummary], limit: int):
         "score",
         "grav",
         "g_scale",
+        "blend",
+        "kd_blend",
         "survival_s",
         "tilt_max(rad)",
         "base_z_min",
@@ -170,6 +186,8 @@ def _print_table(rows: List[RunSummary], limit: int):
                 _fmt(r.score, 3),
                 _fmt_grav_on(r.grav_on),
                 _fmt(r.grav_scale, 3),
+                _fmt(r.blend_seconds, 3),
+                _fmt(r.kd_blend_factor, 3),
                 _fmt(r.survival_time, 3),
                 _fmt(r.tilt_max_abs, 3),
                 _fmt(r.base_z_min, 3),
@@ -216,6 +234,10 @@ def main():
     )
     ap.add_argument("--gscale-min", type=float, default=None, help="Filter: gravity_scale >= this")
     ap.add_argument("--gscale-max", type=float, default=None, help="Filter: gravity_scale <= this")
+    ap.add_argument("--blend-min", type=float, default=None, help="Filter: blend_seconds >= this")
+    ap.add_argument("--blend-max", type=float, default=None, help="Filter: blend_seconds <= this")
+    ap.add_argument("--kdblend-min", type=float, default=None, help="Filter: kd_blend_factor >= this")
+    ap.add_argument("--kdblend-max", type=float, default=None, help="Filter: kd_blend_factor <= this")
     args = ap.parse_args()
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -244,6 +266,16 @@ def main():
         runs = [r for r in runs if r.grav_scale is not None and r.grav_scale >= args.gscale_min]
     if args.gscale_max is not None:
         runs = [r for r in runs if r.grav_scale is not None and r.grav_scale <= args.gscale_max]
+
+    if args.blend_min is not None:
+        runs = [r for r in runs if r.blend_seconds is not None and r.blend_seconds >= args.blend_min]
+    if args.blend_max is not None:
+        runs = [r for r in runs if r.blend_seconds is not None and r.blend_seconds <= args.blend_max]
+
+    if args.kdblend_min is not None:
+        runs = [r for r in runs if r.kd_blend_factor is not None and r.kd_blend_factor >= args.kdblend_min]
+    if args.kdblend_max is not None:
+        runs = [r for r in runs if r.kd_blend_factor is not None and r.kd_blend_factor <= args.kdblend_max]
 
     if not runs:
         print("No runs remain after filtering.")
