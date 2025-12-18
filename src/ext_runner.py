@@ -4,7 +4,7 @@ External control loop runner.
 Tick -> get observations -> optional controller update -> normalize -> apply -> tick
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from ext_normalize import normalize_joint_commands
 from ext_obs_adapter import adapt_obs
@@ -28,6 +28,35 @@ def _to_list3(x) -> list:
     return [float(x[0]), float(x[1]), float(x[2])]
 
 
+def _extract_tau_limit(run_meta: Optional[Dict[str, Any]]) -> Optional[float]:
+    """
+    Best-effort tau_limit extraction from run_meta (written from YAML in main_simulation).
+    Supports:
+      meta.controller.torque.tau_limit   (two_stage)
+      meta.controller.tau_limit          (flat torque_pd legacy)
+    """
+    if not isinstance(run_meta, dict):
+        return None
+    ctrl = run_meta.get("controller", {})
+    if not isinstance(ctrl, dict):
+        return None
+
+    nested = ctrl.get("torque", {})
+    if isinstance(nested, dict) and "tau_limit" in nested:
+        try:
+            return float(nested.get("tau_limit"))
+        except Exception:
+            return None
+
+    if "tau_limit" in ctrl:
+        try:
+            return float(ctrl.get("tau_limit"))
+        except Exception:
+            return None
+
+    return None
+
+
 def _tau_from_normalized_cmds(norm_cmds: Dict[str, Any]) -> Dict[str, float]:
     """
     Extract tau dict when commands are torque/hybrid.
@@ -43,6 +72,46 @@ def _tau_from_normalized_cmds(norm_cmds: Dict[str, Any]) -> Dict[str, float]:
                 # Feedforward torque only; energy metric is approximate for hybrid mode.
                 tau[j] = float(c.get("torque", 0.0))
     return tau
+
+
+def _compute_tau_clip_stats(
+    norm_cmds: Dict[str, Any],
+    tau_limit: Optional[float],
+    eps_ratio: float = 0.98,
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Saturation proxy stats:
+      - tau_clip_frac: fraction of commanded joints whose |tau| is near the limit (>= eps_ratio*tau_limit)
+      - tau_clip_max_ratio: max(|tau|/tau_limit) across joints
+    Works with normalized hybrid/torque commands.
+    """
+    if tau_limit is None or float(tau_limit) <= 0.0:
+        return (None, None)
+
+    abs_vals = []
+    for _, c in (norm_cmds or {}).items():
+        if not isinstance(c, dict):
+            continue
+        mode = c.get("mode", "position")
+        if mode == "torque":
+            try:
+                abs_vals.append(abs(float(c.get("value", 0.0))))
+            except Exception:
+                pass
+        elif mode == "hybrid":
+            try:
+                abs_vals.append(abs(float(c.get("torque", 0.0))))
+            except Exception:
+                pass
+
+    if not abs_vals:
+        return (None, None)
+
+    thr = float(eps_ratio) * float(tau_limit)
+    clip_count = sum(1 for a in abs_vals if a >= thr)
+    frac = float(clip_count) / float(len(abs_vals))
+    max_ratio = max(a / float(tau_limit) for a in abs_vals)
+    return (frac, max_ratio)
 
 
 def run(
@@ -81,6 +150,8 @@ def run(
     # Safety thresholds are passed through to should_abort(obs, **kwargs)
     safety_cfg = safety_cfg or {}
 
+    tau_limit = _extract_tau_limit(run_meta)
+
     while True:
         raw = sim.get_observations()
         obs = adapt_obs(raw)
@@ -96,27 +167,31 @@ def run(
         if (obs.t - last_control_t) >= control_dt:
             joint_cmds = controller.step(obs)
             norm_cmds = normalize_joint_commands(joint_cmds)
+            tau_clip_frac, tau_clip_max_ratio = _compute_tau_clip_stats(norm_cmds, tau_limit=tau_limit, eps_ratio=0.98)
             sim.apply_hybrid_command(norm_cmds)
             last_control_t = obs.t
             updates += 1
 
             r, p, y = quat_to_rpy_xyzw(obs.base_quat_xyzw)
-            samples.append(
-                {
-                    "t": float(obs.t),
-                    "control_dt": float(control_dt),
-                    "base_pos": _to_list3(obs.base_pos),
-                    "base_quat_xyzw": [float(v) for v in obs.base_quat_xyzw],
-                    "rpy": [float(r), float(p), float(y)],
-                    "base_vel": _to_list3(obs.base_vel),
-                    "base_omega": _to_list3(obs.base_omega),
-                    "joint_pos": {k: float(v) for k, v in obs.joint_pos.items()},
-                    "joint_vel": {k: float(v) for k, v in obs.joint_vel.items()},
-                    "contact_forces": {k: _to_list3(v) for k, v in obs.contact_forces.items()},
-                    "foot_pos": {k: _to_list3(v) for k, v in obs.foot_pos.items()},
-                    "tau": _tau_from_normalized_cmds(norm_cmds),
-                }
-            )
+            s = {
+                "t": float(obs.t),
+                "control_dt": float(control_dt),
+                "base_pos": _to_list3(obs.base_pos),
+                "base_quat_xyzw": [float(v) for v in obs.base_quat_xyzw],
+                "rpy": [float(r), float(p), float(y)],
+                "base_vel": _to_list3(obs.base_vel),
+                "base_omega": _to_list3(obs.base_omega),
+                "joint_pos": {k: float(v) for k, v in obs.joint_pos.items()},
+                "joint_vel": {k: float(v) for k, v in obs.joint_vel.items()},
+                "contact_forces": {k: _to_list3(v) for k, v in obs.contact_forces.items()},
+                "foot_pos": {k: _to_list3(v) for k, v in obs.foot_pos.items()},
+                "tau": _tau_from_normalized_cmds(norm_cmds),
+            }
+            if tau_clip_frac is not None:
+                s["tau_clip_frac"] = float(tau_clip_frac)
+            if tau_clip_max_ratio is not None:
+                s["tau_clip_max_ratio"] = float(tau_clip_max_ratio)
+            samples.append(s)
 
         sim.step()
         steps += 1

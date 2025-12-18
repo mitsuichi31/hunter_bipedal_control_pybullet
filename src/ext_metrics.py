@@ -62,6 +62,24 @@ def compute_metrics(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
             "foot_slip_right": None,
         }
 
+    clip_fracs: List[float] = []
+    clip_ratios: List[float] = []
+    for s in samples:
+        if not isinstance(s, dict):
+            continue
+        cf = s.get("tau_clip_frac", None)
+        cr = s.get("tau_clip_max_ratio", None)
+        try:
+            if cf is not None and not math.isnan(float(cf)):
+                clip_fracs.append(float(cf))
+        except Exception:
+            pass
+        try:
+            if cr is not None and not math.isnan(float(cr)):
+                clip_ratios.append(float(cr))
+        except Exception:
+            pass
+
     t0 = float(samples[0]["t"])
     t1 = float(samples[-1]["t"])
 
@@ -98,7 +116,7 @@ def compute_metrics(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
             energy += _energy_step(tau, dq, dt)
 
     tilt_max = max(roll_max, pitch_max)
-    return {
+    metrics: Dict[str, Any] = {
         "n": len(samples),
         "survival_time": t1 - t0,
         "tilt_max_abs": tilt_max,
@@ -109,3 +127,11 @@ def compute_metrics(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
         "foot_slip_left": slip_left,
         "foot_slip_right": slip_right,
     }
+
+    if clip_fracs:
+        metrics["tau_clip_frac_mean"] = float(sum(clip_fracs) / len(clip_fracs))
+        metrics["tau_clip_frac_max"] = float(max(clip_fracs))
+    if clip_ratios:
+        metrics["tau_clip_max_ratio_max"] = float(max(clip_ratios))
+
+    return metrics

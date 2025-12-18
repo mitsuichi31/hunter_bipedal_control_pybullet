@@ -33,6 +33,8 @@ class RunSummary:
     grav_scale: Optional[float]
     blend_seconds: Optional[float]
     kd_blend_factor: Optional[float]
+    tau_clip_frac_mean: Optional[float]
+    tau_clip_frac_max: Optional[float]
     survival_time: Optional[float]
     tilt_max_abs: Optional[float]
     base_z_min: Optional[float]
@@ -73,6 +75,8 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
     energy = _safe_get(metrics, ["energy_abs_tau_dq"])
     slip_l = _safe_get(metrics, ["foot_slip_left"])
     slip_r = _safe_get(metrics, ["foot_slip_right"])
+    clip_mean = _safe_get(metrics, ["tau_clip_frac_mean"])
+    clip_max = _safe_get(metrics, ["tau_clip_frac_max"])
 
     reason = None
     if isinstance(abort, dict):
@@ -106,6 +110,14 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
         kd_blend_factor = float(kd_blend_factor) if kd_blend_factor is not None else None
     except Exception:
         kd_blend_factor = None
+    try:
+        clip_mean = float(clip_mean) if clip_mean is not None else None
+    except Exception:
+        clip_mean = None
+    try:
+        clip_max = float(clip_max) if clip_max is not None else None
+    except Exception:
+        clip_max = None
 
     return RunSummary(
         path=path,
@@ -116,6 +128,8 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
         grav_scale=grav_scale,
         blend_seconds=blend_seconds,
         kd_blend_factor=kd_blend_factor,
+        tau_clip_frac_mean=clip_mean,
+        tau_clip_frac_max=clip_max,
         survival_time=float(st) if st is not None else None,
         tilt_max_abs=float(tilt) if tilt is not None else None,
         base_z_min=float(zmin) if zmin is not None else None,
@@ -167,6 +181,8 @@ def _print_table(rows: List[RunSummary], limit: int):
         "g_scale",
         "blend",
         "kd_blend",
+        "clip_mean",
+        "clip_max",
         "survival_s",
         "tilt_max(rad)",
         "base_z_min",
@@ -184,15 +200,17 @@ def _print_table(rows: List[RunSummary], limit: int):
                 _fmt_time(r.mtime),
                 r.status,
                 _fmt(r.score, 3),
-                _fmt_grav_on(r.grav_on),
-                _fmt(r.grav_scale, 3),
-                _fmt(r.blend_seconds, 3),
-                _fmt(r.kd_blend_factor, 3),
-                _fmt(r.survival_time, 3),
-                _fmt(r.tilt_max_abs, 3),
-                _fmt(r.base_z_min, 3),
-                _fmt(r.energy_abs_tau_dq, 3),
-                _fmt(r.foot_slip_left, 3),
+            _fmt_grav_on(r.grav_on),
+            _fmt(r.grav_scale, 3),
+            _fmt(r.blend_seconds, 3),
+            _fmt(r.kd_blend_factor, 3),
+            _fmt(r.tau_clip_frac_mean, 3),
+            _fmt(r.tau_clip_frac_max, 3),
+            _fmt(r.survival_time, 3),
+            _fmt(r.tilt_max_abs, 3),
+            _fmt(r.base_z_min, 3),
+            _fmt(r.energy_abs_tau_dq, 3),
+            _fmt(r.foot_slip_left, 3),
                 _fmt(r.foot_slip_right, 3),
                 (r.abort_reason or "-")[:80],
                 os.path.basename(r.path),
