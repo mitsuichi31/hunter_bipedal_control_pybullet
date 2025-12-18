@@ -10,6 +10,7 @@ This script integrates:
 
 import os
 import sys
+import random
 import time
 import numpy as np
 import argparse
@@ -1269,6 +1270,11 @@ if __name__ == "__main__":
         ctrl_cfg = (cfg.get("controller") or {})
         safety_cfg = (cfg.get("safety") or {})
 
+        # Seed (reproducibility)
+        seed = int(runner_cfg.get("seed", 0) or 0)
+        random.seed(seed)
+        np.random.seed(seed)
+
         q_ref = standing_q_ref()
 
         ctrl_type = str(ctrl_cfg.get("type", "torque_pd"))
@@ -1325,6 +1331,7 @@ if __name__ == "__main__":
             log_dir=log_dir,
             run_name=run_name,
             safety_cfg=safety_cfg,
+            run_meta={"seed": seed, "runner": runner_cfg, "controller": ctrl_cfg, "safety": safety_cfg},
         )
         print(result)
 

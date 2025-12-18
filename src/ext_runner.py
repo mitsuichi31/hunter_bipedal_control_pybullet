@@ -55,6 +55,7 @@ def run(
     log_dir: str = "runs",
     run_name: str = "standing_pd_ext",
     safety_cfg: Optional[Dict[str, Any]] = None,
+    run_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run an external controller against HunterSimulation for a fixed duration.
@@ -134,6 +135,7 @@ def run(
     _ensure_dir(log_dir)
     path = os.path.join(log_dir, f"{run_name}_{_now_tag()}.json")
     payload = {
+        "meta": run_meta or {},
         "result": result,
         "samples": samples,
     }

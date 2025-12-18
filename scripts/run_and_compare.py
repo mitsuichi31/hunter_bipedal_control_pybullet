@@ -24,7 +24,7 @@ def main() -> int:
     ap.add_argument(
         "--sort-by",
         default="survival",
-        choices=["mtime", "survival", "tilt", "energy"],
+        choices=["mtime", "survival", "score", "tilt", "energy"],
         help="How to rank runs in compare table",
     )
     args = ap.parse_args()
@@ -70,4 +70,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
