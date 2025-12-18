@@ -29,6 +29,8 @@ class RunSummary:
     mtime: float
     status: str
     score: Optional[float]
+    grav_on: Optional[bool]
+    grav_scale: Optional[float]
     survival_time: Optional[float]
     tilt_max_abs: Optional[float]
     base_z_min: Optional[float]
@@ -61,6 +63,7 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
     result = payload.get("result", {})
     metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
     abort = result.get("abort", None) if isinstance(result, dict) else None
+    meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
 
     st = _safe_get(metrics, ["survival_time"])
     tilt = _safe_get(metrics, ["tilt_max_abs"])
@@ -81,11 +84,24 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
     except Exception:
         score = None
 
+    grav_on = _safe_get(meta, ["controller", "torque", "use_gravity_comp"], default=None)
+    grav_scale = _safe_get(meta, ["controller", "torque", "gravity_scale"], default=None)
+    try:
+        grav_on = bool(grav_on) if grav_on is not None else None
+    except Exception:
+        grav_on = None
+    try:
+        grav_scale = float(grav_scale) if grav_scale is not None else None
+    except Exception:
+        grav_scale = None
+
     return RunSummary(
         path=path,
         mtime=os.path.getmtime(path),
         status=str(result.get("status", "UNKNOWN")) if isinstance(result, dict) else "UNKNOWN",
         score=score,
+        grav_on=grav_on,
+        grav_scale=grav_scale,
         survival_time=float(st) if st is not None else None,
         tilt_max_abs=float(tilt) if tilt is not None else None,
         base_z_min=float(zmin) if zmin is not None else None,
@@ -116,6 +132,12 @@ def _fmt(x: Optional[float], digits: int = 3) -> str:
     return f"{x:.{digits}f}"
 
 
+def _fmt_grav_on(x: Optional[bool]) -> str:
+    if x is None:
+        return "-"
+    return "ON" if x else "OFF"
+
+
 def _fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -127,6 +149,8 @@ def _print_table(rows: List[RunSummary], limit: int):
         "time",
         "status",
         "score",
+        "grav",
+        "g_scale",
         "survival_s",
         "tilt_max(rad)",
         "base_z_min",
@@ -144,6 +168,8 @@ def _print_table(rows: List[RunSummary], limit: int):
                 _fmt_time(r.mtime),
                 r.status,
                 _fmt(r.score, 3),
+                _fmt_grav_on(r.grav_on),
+                _fmt(r.grav_scale, 3),
                 _fmt(r.survival_time, 3),
                 _fmt(r.tilt_max_abs, 3),
                 _fmt(r.base_z_min, 3),
@@ -182,6 +208,14 @@ def main():
         choices=["mtime", "survival", "score", "tilt", "energy"],
         help="Sort criterion (default: newest first)",
     )
+    ap.add_argument(
+        "--grav",
+        default="any",
+        choices=["any", "on", "off"],
+        help="Filter by gravity compensation flag stored in meta.controller.torque.use_gravity_comp",
+    )
+    ap.add_argument("--gscale-min", type=float, default=None, help="Filter: gravity_scale >= this")
+    ap.add_argument("--gscale-max", type=float, default=None, help="Filter: gravity_scale <= this")
     args = ap.parse_args()
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -200,6 +234,19 @@ def main():
 
     if not runs:
         print("Logs were found but none could be parsed.")
+        return
+
+    if args.grav != "any":
+        want = True if args.grav == "on" else False
+        runs = [r for r in runs if r.grav_on is not None and r.grav_on == want]
+
+    if args.gscale_min is not None:
+        runs = [r for r in runs if r.grav_scale is not None and r.grav_scale >= args.gscale_min]
+    if args.gscale_max is not None:
+        runs = [r for r in runs if r.grav_scale is not None and r.grav_scale <= args.gscale_max]
+
+    if not runs:
+        print("No runs remain after filtering.")
         return
 
     if args.sort_by == "mtime":
