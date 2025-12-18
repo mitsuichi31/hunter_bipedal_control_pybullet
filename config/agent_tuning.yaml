@@ -1,0 +1,23 @@
+# Agent-tunable parameters for standing-pd-ext
+
+runner:
+  seconds: 10.0
+  # Controller update period. 0.01 = 100 Hz, 0.001 = 1 kHz
+  control_dt: 0.01
+  # Number of physics ticks to wait after reset before starting control
+  settle_steps: 300
+  log_dir: "runs"
+  run_name: "standing_pd_ext"
+
+safety:
+  max_roll: 0.7
+  max_pitch: 0.7
+  min_base_z: 0.12
+  max_omega: 20.0
+
+controller:
+  # For PDPostureTorque
+  kp: 40.0
+  kd: 1.5
+  tau_limit: 60.0
+

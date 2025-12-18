@@ -19,6 +19,8 @@ ENV/
 # Logs
 logs/*.log
 *.log
+runs/
+src/runs/
 
 # OS
 .DS_Store

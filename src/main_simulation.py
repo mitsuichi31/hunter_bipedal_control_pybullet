@@ -1252,10 +1252,49 @@ if __name__ == "__main__":
         from ext_pd_posture_torque import PDPostureTorque
         from ext_runner import run
         from ext_standing_ref import standing_q_ref
+        from ext_pd_posture_torque import TorquePD
         from gravity_compensation import GravityCompensation
+        import yaml
 
-        controller = PDPostureTorque(standing_q_ref(), gravity_comp=GravityCompensation(sim.robot_id))
-        result = run(sim, controller, seconds=args.duration, control_dt=0.01)
+        cfg_path = os.path.join(script_dir, "../config/agent_tuning.yaml")
+        cfg = {}
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            cfg = {}
+
+        runner_cfg = (cfg.get("runner") or {})
+        ctrl_cfg = (cfg.get("controller") or {})
+        safety_cfg = (cfg.get("safety") or {})
+
+        gains = TorquePD(
+            kp=float(ctrl_cfg.get("kp", 40.0)),
+            kd=float(ctrl_cfg.get("kd", 1.5)),
+            tau_limit=float(ctrl_cfg.get("tau_limit", 60.0)),
+        )
+        controller = PDPostureTorque(
+            standing_q_ref(),
+            gains=gains,
+            gravity_comp=GravityCompensation(sim.robot_id),
+        )
+
+        seconds = float(runner_cfg.get("seconds", args.duration))
+        control_dt = float(runner_cfg.get("control_dt", 0.01))
+        settle_steps = int(runner_cfg.get("settle_steps", 0))
+        log_dir = str(runner_cfg.get("log_dir", "runs"))
+        run_name = str(runner_cfg.get("run_name", "standing_pd_ext"))
+
+        result = run(
+            sim,
+            controller,
+            seconds=seconds,
+            control_dt=control_dt,
+            settle_steps=settle_steps,
+            log_dir=log_dir,
+            run_name=run_name,
+            safety=safety_cfg,
+        )
         print(result)
 
         sim.disconnect()
