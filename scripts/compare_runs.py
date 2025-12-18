@@ -33,6 +33,8 @@ class RunSummary:
     grav_scale: Optional[float]
     blend_seconds: Optional[float]
     kd_blend_factor: Optional[float]
+    pos_kp: Optional[float]
+    pos_kd: Optional[float]
     tau_clip_frac_mean: Optional[float]
     tau_clip_frac_max: Optional[float]
     survival_time: Optional[float]
@@ -94,6 +96,8 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
     grav_scale = _safe_get(meta, ["controller", "torque", "gravity_scale"], default=None)
     blend_seconds = _safe_get(meta, ["controller", "blend_seconds"], default=None)
     kd_blend_factor = _safe_get(meta, ["controller", "torque", "kd_blend_factor"], default=None)
+    pos_kp = _safe_get(meta, ["controller", "position", "kp"], default=None)
+    pos_kd = _safe_get(meta, ["controller", "position", "kd"], default=None)
     try:
         grav_on = bool(grav_on) if grav_on is not None else None
     except Exception:
@@ -110,6 +114,14 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
         kd_blend_factor = float(kd_blend_factor) if kd_blend_factor is not None else None
     except Exception:
         kd_blend_factor = None
+    try:
+        pos_kp = float(pos_kp) if pos_kp is not None else None
+    except Exception:
+        pos_kp = None
+    try:
+        pos_kd = float(pos_kd) if pos_kd is not None else None
+    except Exception:
+        pos_kd = None
     try:
         clip_mean = float(clip_mean) if clip_mean is not None else None
     except Exception:
@@ -128,6 +140,8 @@ def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
         grav_scale=grav_scale,
         blend_seconds=blend_seconds,
         kd_blend_factor=kd_blend_factor,
+        pos_kp=pos_kp,
+        pos_kd=pos_kd,
         tau_clip_frac_mean=clip_mean,
         tau_clip_frac_max=clip_max,
         survival_time=float(st) if st is not None else None,
@@ -181,6 +195,8 @@ def _print_table(rows: List[RunSummary], limit: int):
         "g_scale",
         "blend",
         "kd_blend",
+        "pos_kp",
+        "pos_kd",
         "clip_mean",
         "clip_max",
         "survival_s",
@@ -200,14 +216,16 @@ def _print_table(rows: List[RunSummary], limit: int):
                 _fmt_time(r.mtime),
                 r.status,
                 _fmt(r.score, 3),
-            _fmt_grav_on(r.grav_on),
-            _fmt(r.grav_scale, 3),
-            _fmt(r.blend_seconds, 3),
-            _fmt(r.kd_blend_factor, 3),
-            _fmt(r.tau_clip_frac_mean, 3),
-            _fmt(r.tau_clip_frac_max, 3),
-            _fmt(r.survival_time, 3),
-            _fmt(r.tilt_max_abs, 3),
+                _fmt_grav_on(r.grav_on),
+                _fmt(r.grav_scale, 3),
+                _fmt(r.blend_seconds, 3),
+                _fmt(r.kd_blend_factor, 3),
+                _fmt(r.pos_kp, 2),
+                _fmt(r.pos_kd, 2),
+                _fmt(r.tau_clip_frac_mean, 3),
+                _fmt(r.tau_clip_frac_max, 3),
+                _fmt(r.survival_time, 3),
+                _fmt(r.tilt_max_abs, 3),
             _fmt(r.base_z_min, 3),
             _fmt(r.energy_abs_tau_dq, 3),
             _fmt(r.foot_slip_left, 3),
@@ -256,6 +274,10 @@ def main():
     ap.add_argument("--blend-max", type=float, default=None, help="Filter: blend_seconds <= this")
     ap.add_argument("--kdblend-min", type=float, default=None, help="Filter: kd_blend_factor >= this")
     ap.add_argument("--kdblend-max", type=float, default=None, help="Filter: kd_blend_factor <= this")
+    ap.add_argument("--poskp-min", type=float, default=None, help="Filter: position kp >= this")
+    ap.add_argument("--poskp-max", type=float, default=None, help="Filter: position kp <= this")
+    ap.add_argument("--poskd-min", type=float, default=None, help="Filter: position kd >= this")
+    ap.add_argument("--poskd-max", type=float, default=None, help="Filter: position kd <= this")
     args = ap.parse_args()
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -294,6 +316,15 @@ def main():
         runs = [r for r in runs if r.kd_blend_factor is not None and r.kd_blend_factor >= args.kdblend_min]
     if args.kdblend_max is not None:
         runs = [r for r in runs if r.kd_blend_factor is not None and r.kd_blend_factor <= args.kdblend_max]
+
+    if args.poskp_min is not None:
+        runs = [r for r in runs if r.pos_kp is not None and r.pos_kp >= args.poskp_min]
+    if args.poskp_max is not None:
+        runs = [r for r in runs if r.pos_kp is not None and r.pos_kp <= args.poskp_max]
+    if args.poskd_min is not None:
+        runs = [r for r in runs if r.pos_kd is not None and r.pos_kd >= args.poskd_min]
+    if args.poskd_max is not None:
+        runs = [r for r in runs if r.pos_kd is not None and r.pos_kd <= args.poskd_max]
 
     if not runs:
         print("No runs remain after filtering.")

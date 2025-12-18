@@ -31,8 +31,10 @@ controller:
 
   # Warmup stage (POSITION_CONTROL)
   position:
-    kp: 0.3
-    kd: 0.1
+    # NOTE: 0.3/0.1 is usually far too soft; robot collapses before hold.
+    # Start with "stiff enough to stand", then tune down if needed.
+    kp: 30.0
+    kd: 1.0
 
   # Hold stage (TORQUE_CONTROL PD)
   torque:

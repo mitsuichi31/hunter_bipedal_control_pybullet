@@ -172,6 +172,8 @@ def main() -> int:
     ap.add_argument("--grav", default="0,1", help="Comma-separated use_gravity_comp candidates: 0 or 1 (two_stage)")
     ap.add_argument("--grav-scale", default="1.0", help="Comma-separated gravity_scale candidates (two_stage)")
     ap.add_argument("--kd-blend", default="1.0", help="Comma-separated kd_blend_factor candidates (two_stage)")
+    ap.add_argument("--pos-kp", default=None, help="Comma-separated warmup position kp candidates (two_stage)")
+    ap.add_argument("--pos-kd", default=None, help="Comma-separated warmup position kd candidates (two_stage)")
     ap.add_argument(
         "--grid-sample",
         default="spread",
@@ -208,6 +210,8 @@ def main() -> int:
     grav_flags = [int(float(x)) for x in args.grav.split(",") if x.strip()]
     grav_scales = _mk_grid(parse_floats(args.grav_scale))
     kd_blends = _mk_grid(parse_floats(args.kd_blend))
+    pos_kps = _mk_grid(parse_floats(args.pos_kp)) if args.pos_kp is not None else None
+    pos_kds = _mk_grid(parse_floats(args.pos_kd)) if args.pos_kd is not None else None
 
     def _stable_hash(x: Any) -> str:
         # Stable, deterministic ordering independent of Python's hash randomization.
@@ -260,11 +264,17 @@ def main() -> int:
     planned_params: List[Dict[str, Any]] = []
 
     if args.mode == "grid":
-        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups, blends, grav_flags, grav_scales, kd_blends))
+        _pos_kps = pos_kps if pos_kps is not None else [None]
+        _pos_kds = pos_kds if pos_kds is not None else [None]
+        all_params = list(
+            itertools.product(
+                kps, kds, taus, dts, settles, warmups, blends, grav_flags, grav_scales, kd_blends, _pos_kps, _pos_kds
+            )
+        )
         max_grid = max(1, args.trials)
         if len(all_params) > max_grid:
             all_params = _downsample_grid(all_params, max_grid)
-        for kp, kd, tau, dt, settle, warmup, blend, grav, gscale, kd_blend in all_params:
+        for kp, kd, tau, dt, settle, warmup, blend, grav, gscale, kd_blend, pos_kp, pos_kd in all_params:
             planned_params.append(
                 {
                     "kp": kp,
@@ -277,6 +287,8 @@ def main() -> int:
                     "use_gravity_comp": bool(int(grav)),
                     "gravity_scale": float(gscale),
                     "kd_blend_factor": float(kd_blend),
+                    "pos_kp": float(pos_kp) if pos_kp is not None else None,
+                    "pos_kd": float(pos_kd) if pos_kd is not None else None,
                 }
             )
 
@@ -291,6 +303,8 @@ def main() -> int:
                 "use_gravity_comp": sorted({p["use_gravity_comp"] for p in planned_params}),
                 "gravity_scale": sorted({p["gravity_scale"] for p in planned_params}),
                 "kd_blend_factor": sorted({p["kd_blend_factor"] for p in planned_params}),
+                "pos_kp": sorted({p["pos_kp"] for p in planned_params}),
+                "pos_kd": sorted({p["pos_kd"] for p in planned_params}),
             }
             print("[grid] actual coverage:", used)
         except Exception:
@@ -310,6 +324,8 @@ def main() -> int:
                     "use_gravity_comp": bool(int(random.choice(grav_flags))),
                     "gravity_scale": float(random.choice(grav_scales)),
                     "kd_blend_factor": float(random.choice(kd_blends)),
+                    "pos_kp": float(random.choice(pos_kps)) if pos_kps is not None else None,
+                    "pos_kd": float(random.choice(pos_kds)) if pos_kds is not None else None,
                 }
             )
 
@@ -341,6 +357,14 @@ def main() -> int:
         if ctrl_type == "two_stage":
             cfg_ctrl["warmup_seconds"] = float(p.get("warmup_seconds", cfg_ctrl.get("warmup_seconds", 1.0)))
             cfg_ctrl["blend_seconds"] = float(p.get("blend_seconds", cfg_ctrl.get("blend_seconds", 0.0)))
+
+            pos_block = dict(cfg_ctrl.get("position") or {})
+            if p.get("pos_kp", None) is not None:
+                pos_block["kp"] = float(p["pos_kp"])
+            if p.get("pos_kd", None) is not None:
+                pos_block["kd"] = float(p["pos_kd"])
+            cfg_ctrl["position"] = pos_block
+
             torque_block = dict(cfg_ctrl.get("torque") or {})
             torque_block["kp"] = float(p["kp"])
             torque_block["kd"] = float(p["kd"])
@@ -472,6 +496,14 @@ def main() -> int:
     if str(best_cfg_ctrl.get("type", "torque_pd")) == "two_stage":
         best_cfg_ctrl["warmup_seconds"] = float(best.params.get("warmup_seconds", best_cfg_ctrl.get("warmup_seconds", 1.0)))
         best_cfg_ctrl["blend_seconds"] = float(best.params.get("blend_seconds", best_cfg_ctrl.get("blend_seconds", 0.0)))
+
+        pos_block = dict(best_cfg_ctrl.get("position") or {})
+        if best.params.get("pos_kp", None) is not None:
+            pos_block["kp"] = float(best.params["pos_kp"])
+        if best.params.get("pos_kd", None) is not None:
+            pos_block["kd"] = float(best.params["pos_kd"])
+        best_cfg_ctrl["position"] = pos_block
+
         torque_block = dict(best_cfg_ctrl.get("torque") or {})
         torque_block["kp"] = float(best.params["kp"])
         torque_block["kd"] = float(best.params["kd"])
