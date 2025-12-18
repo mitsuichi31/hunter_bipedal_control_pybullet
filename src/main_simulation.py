@@ -1252,8 +1252,9 @@ if __name__ == "__main__":
         from ext_pd_posture_torque import PDPostureTorque
         from ext_runner import run
         from ext_standing_ref import standing_q_ref
+        from gravity_compensation import GravityCompensation
 
-        controller = PDPostureTorque(standing_q_ref())
+        controller = PDPostureTorque(standing_q_ref(), gravity_comp=GravityCompensation(sim.robot_id))
         result = run(sim, controller, seconds=args.duration, control_dt=0.01)
         print(result)
 
