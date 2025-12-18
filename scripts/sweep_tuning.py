@@ -139,6 +139,7 @@ def main() -> int:
     ap.add_argument("--duration", type=float, default=None, help="Override runner.seconds (optional)")
     ap.add_argument("--no-gui", action="store_true", help="Force --no-gui for main_simulation.py")
     ap.add_argument("--dry-run", action="store_true", help="Print planned trials but do not run")
+    ap.add_argument("--warmup", default="1.0", help="Comma-separated warmup_seconds candidates (two_stage)")
 
     ap.add_argument("--kp", default="20,40,60,80,100,120", help="Comma-separated kp candidates (grid)")
     ap.add_argument("--kd", default="0.5,1.0,1.5,2.0,3.0,4.0", help="Comma-separated kd candidates (grid)")
@@ -162,18 +163,26 @@ def main() -> int:
     taus = _mk_grid(parse_floats(args.tau))
     dts = _mk_grid(parse_floats(args.control_dt))
     settles = [int(float(x)) for x in args.settle.split(",") if x.strip()]
+    warmups = _mk_grid(parse_floats(args.warmup))
 
     planned_params: List[Dict[str, Any]] = []
 
     if args.mode == "grid":
-        all_params = list(itertools.product(kps, kds, taus, dts, settles))
+        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups))
         max_grid = max(1, args.trials)
         if len(all_params) > max_grid:
             step = max(1, len(all_params) // max_grid)
             all_params = all_params[::step][:max_grid]
-        for kp, kd, tau, dt, settle in all_params:
+        for kp, kd, tau, dt, settle, warmup in all_params:
             planned_params.append(
-                {"kp": kp, "kd": kd, "tau_limit": tau, "control_dt": dt, "settle_steps": settle}
+                {
+                    "kp": kp,
+                    "kd": kd,
+                    "tau_limit": tau,
+                    "control_dt": dt,
+                    "settle_steps": settle,
+                    "warmup_seconds": warmup,
+                }
             )
     else:
         random.seed(args.seed)
@@ -185,6 +194,7 @@ def main() -> int:
                     "tau_limit": random.choice(taus),
                     "control_dt": random.choice(dts),
                     "settle_steps": random.choice(settles),
+                    "warmup_seconds": random.choice(warmups),
                 }
             )
 
@@ -207,9 +217,21 @@ def main() -> int:
         cfg_runner["control_dt"] = float(p["control_dt"])
         cfg_runner["settle_steps"] = int(p["settle_steps"])
 
-        cfg_ctrl["kp"] = float(p["kp"])
-        cfg_ctrl["kd"] = float(p["kd"])
-        cfg_ctrl["tau_limit"] = float(p["tau_limit"])
+        # Support both controller layouts:
+        #  - legacy: controller.{kp,kd,tau_limit}
+        #  - two_stage: controller.type == "two_stage" and controller.torque.{kp,kd,tau_limit}
+        ctrl_type = str(cfg_ctrl.get("type", "torque_pd"))
+        if ctrl_type == "two_stage":
+            cfg_ctrl["warmup_seconds"] = float(p.get("warmup_seconds", cfg_ctrl.get("warmup_seconds", 1.0)))
+            torque_block = dict(cfg_ctrl.get("torque") or {})
+            torque_block["kp"] = float(p["kp"])
+            torque_block["kd"] = float(p["kd"])
+            torque_block["tau_limit"] = float(p["tau_limit"])
+            cfg_ctrl["torque"] = torque_block
+        else:
+            cfg_ctrl["kp"] = float(p["kp"])
+            cfg_ctrl["kd"] = float(p["kd"])
+            cfg_ctrl["tau_limit"] = float(p["tau_limit"])
 
         cfg["runner"] = cfg_runner
         cfg["controller"] = cfg_ctrl
@@ -291,9 +313,17 @@ def main() -> int:
     best_cfg_ctrl = best_cfg.get("controller") or {}
     best_cfg_runner["control_dt"] = float(best.params["control_dt"])
     best_cfg_runner["settle_steps"] = int(best.params["settle_steps"])
-    best_cfg_ctrl["kp"] = float(best.params["kp"])
-    best_cfg_ctrl["kd"] = float(best.params["kd"])
-    best_cfg_ctrl["tau_limit"] = float(best.params["tau_limit"])
+    if str(best_cfg_ctrl.get("type", "torque_pd")) == "two_stage":
+        best_cfg_ctrl["warmup_seconds"] = float(best.params.get("warmup_seconds", best_cfg_ctrl.get("warmup_seconds", 1.0)))
+        torque_block = dict(best_cfg_ctrl.get("torque") or {})
+        torque_block["kp"] = float(best.params["kp"])
+        torque_block["kd"] = float(best.params["kd"])
+        torque_block["tau_limit"] = float(best.params["tau_limit"])
+        best_cfg_ctrl["torque"] = torque_block
+    else:
+        best_cfg_ctrl["kp"] = float(best.params["kp"])
+        best_cfg_ctrl["kd"] = float(best.params["kd"])
+        best_cfg_ctrl["tau_limit"] = float(best.params["tau_limit"])
     best_cfg["runner"] = best_cfg_runner
     best_cfg["controller"] = best_cfg_ctrl
 
@@ -344,4 +374,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

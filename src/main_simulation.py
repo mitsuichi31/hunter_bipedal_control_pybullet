@@ -1269,16 +1269,44 @@ if __name__ == "__main__":
         ctrl_cfg = (cfg.get("controller") or {})
         safety_cfg = (cfg.get("safety") or {})
 
-        gains = TorquePD(
-            kp=float(ctrl_cfg.get("kp", 40.0)),
-            kd=float(ctrl_cfg.get("kd", 1.5)),
-            tau_limit=float(ctrl_cfg.get("tau_limit", 60.0)),
-        )
-        controller = PDPostureTorque(
-            standing_q_ref(),
-            gains=gains,
-            gravity_comp=GravityCompensation(sim.robot_id),
-        )
+        q_ref = standing_q_ref()
+
+        ctrl_type = str(ctrl_cfg.get("type", "torque_pd"))
+        if ctrl_type == "two_stage":
+            from ext_controller_two_stage import (
+                TwoStagePostureController,
+                PositionStageGains,
+                TorqueStageGains,
+            )
+
+            warmup_seconds = float(ctrl_cfg.get("warmup_seconds", 1.0))
+            pos_cfg = (ctrl_cfg.get("position") or {})
+            tau_cfg = (ctrl_cfg.get("torque") or {})
+            controller = TwoStagePostureController(
+                q_ref,
+                warmup_seconds=warmup_seconds,
+                position_gains=PositionStageGains(
+                    kp=float(pos_cfg.get("kp", 0.3)),
+                    kd=float(pos_cfg.get("kd", 0.1)),
+                ),
+                torque_gains=TorqueStageGains(
+                    kp=float(tau_cfg.get("kp", 40.0)),
+                    kd=float(tau_cfg.get("kd", 1.5)),
+                    tau_limit=float(tau_cfg.get("tau_limit", 60.0)),
+                ),
+            )
+        else:
+            # torque_pd (backward compatible: allow flat kp/kd/tau_limit in YAML)
+            gains = TorquePD(
+                kp=float(ctrl_cfg.get("kp", (ctrl_cfg.get("torque") or {}).get("kp", 40.0))),
+                kd=float(ctrl_cfg.get("kd", (ctrl_cfg.get("torque") or {}).get("kd", 1.5))),
+                tau_limit=float(ctrl_cfg.get("tau_limit", (ctrl_cfg.get("torque") or {}).get("tau_limit", 60.0))),
+            )
+            controller = PDPostureTorque(
+                q_ref,
+                gains=gains,
+                gravity_comp=GravityCompensation(sim.robot_id),
+            )
 
         seconds = float(runner_cfg.get("seconds", args.duration))
         control_dt = float(runner_cfg.get("control_dt", 0.01))

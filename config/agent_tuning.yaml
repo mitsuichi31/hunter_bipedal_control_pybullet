@@ -16,8 +16,21 @@ safety:
   max_omega: 20.0
 
 controller:
-  # For PDPostureTorque
-  kp: 40.0
-  kd: 1.5
-  tau_limit: 60.0
+  # Select controller implementation:
+  # - "torque_pd": torque-only PD posture hold (harder to stand up)
+  # - "two_stage": position warmup then torque PD hold (recommended)
+  type: "two_stage"
 
+  # Only used when type == "two_stage"
+  warmup_seconds: 1.0
+
+  # Warmup stage (POSITION_CONTROL)
+  position:
+    kp: 0.3
+    kd: 0.1
+
+  # Hold stage (TORQUE_CONTROL PD)
+  torque:
+    kp: 40.0
+    kd: 1.5
+    tau_limit: 60.0
