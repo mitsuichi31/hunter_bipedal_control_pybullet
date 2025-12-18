@@ -13,6 +13,38 @@ def _energy_step(tau: Dict[str, float], dq: Dict[str, float], dt: float) -> floa
     return e
 
 
+def compute_score(metrics: Dict[str, Any], status: str) -> float:
+    """
+    Common scoring function used by scripts (compare/sweep).
+
+    Design:
+      - Primary: maximize survival_time
+      - Strong bonus if DONE
+      - Small penalties for tilt and energy (energy is approximate unless torque commands logged)
+    """
+    survival = float(metrics.get("survival_time", 0.0) or 0.0)
+    tilt = metrics.get("tilt_max_abs", None)
+    energy = metrics.get("energy_abs_tau_dq", None)
+
+    score = survival
+    if str(status).upper() == "DONE":
+        score += 100.0
+
+    if tilt is not None:
+        try:
+            score -= 0.5 * float(tilt)
+        except Exception:
+            pass
+
+    if energy is not None:
+        try:
+            score -= 1e-3 * float(energy)
+        except Exception:
+            pass
+
+    return float(score)
+
+
 def compute_metrics(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Compute lightweight metrics from ext_runner samples (one per control update).
@@ -77,4 +109,3 @@ def compute_metrics(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
         "foot_slip_left": slip_left,
         "foot_slip_right": slip_right,
     }
-

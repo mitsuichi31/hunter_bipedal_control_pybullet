@@ -9,7 +9,18 @@ import random
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+
+def _import_compute_score(repo_root: str):
+    import sys as _sys
+
+    src_dir = os.path.join(repo_root, "src")
+    if src_dir not in _sys.path:
+        _sys.path.insert(0, src_dir)
+    from ext_metrics import compute_score  # type: ignore
+
+    return compute_score
 
 
 def _load_json(path: str) -> Dict[str, Any]:
@@ -67,29 +78,26 @@ def _run(cmd: List[str], cwd: Optional[str] = None, env: Optional[Dict[str, str]
 class TrialResult:
     idx: int
     params: Dict[str, Any]
-    log_path: Optional[str]
-    status: str
-    survival_time: float
-    tilt_max_abs: Optional[float]
-    base_z_min: Optional[float]
-    energy: Optional[float]
-    abort_reason: Optional[str]
+    # aggregated across repeats
+    repeats: int
+    success_count: int
+    status: str  # e.g. "DONE@2/3" or "ABORT@0/3"
+    survival_mean: float
+    survival_min: float
+    score_mean: float
+    tilt_mean: Optional[float]
+    energy_mean: Optional[float]
+    abort_reasons: List[str]
+    log_paths: List[str]
 
 
 def _score(tr: TrialResult) -> float:
-    """
-    Primary objective: maximize survival_time.
-    Add big bonus if DONE. Small penalty for tilt.
-    """
-    s = tr.survival_time
-    if tr.status == "DONE":
-        s += 100.0
-    if tr.tilt_max_abs is not None:
-        s -= 0.5 * tr.tilt_max_abs
-    return s
+    return float(tr.score_mean)
 
 
-def _extract_trial(log_path: str, idx: int, params: Dict[str, Any]) -> TrialResult:
+def _extract_single(
+    log_path: str, compute_score_fn
+) -> Tuple[str, Dict[str, Any], float, Optional[float], Optional[float], Optional[str]]:
     payload = _load_json(log_path)
     result = payload.get("result", {})
     metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
@@ -98,20 +106,17 @@ def _extract_trial(log_path: str, idx: int, params: Dict[str, Any]) -> TrialResu
     status = str(result.get("status", "UNKNOWN"))
     survival = float(metrics.get("survival_time", 0.0) or 0.0)
     tilt = metrics.get("tilt_max_abs", None)
-    zmin = metrics.get("base_z_min", None)
     energy = metrics.get("energy_abs_tau_dq", None)
     reason = abort.get("reason") if isinstance(abort, dict) else None
 
-    return TrialResult(
-        idx=idx,
-        params=params,
-        log_path=log_path,
-        status=status,
-        survival_time=survival,
-        tilt_max_abs=float(tilt) if tilt is not None else None,
-        base_z_min=float(zmin) if zmin is not None else None,
-        energy=float(energy) if energy is not None else None,
-        abort_reason=str(reason) if reason is not None else None,
+    _ = float(compute_score_fn(metrics if isinstance(metrics, dict) else {}, status))
+    return (
+        status,
+        metrics if isinstance(metrics, dict) else {},
+        survival,
+        float(tilt) if tilt is not None else None,
+        float(energy) if energy is not None else None,
+        str(reason) if reason is not None else None,
     )
 
 
@@ -134,6 +139,7 @@ def main() -> int:
     ap.add_argument("--log-dir", default="runs", help="Run logs directory")
     ap.add_argument("--prefix", default="standing_pd_ext", help="Log prefix")
     ap.add_argument("--trials", type=int, default=24, help="Number of trials (random mode)")
+    ap.add_argument("--repeats", type=int, default=1, help="Repeat each parameter set N times and aggregate")
     ap.add_argument("--mode", choices=["grid", "random"], default="grid", help="Sweep mode")
     ap.add_argument("--seed", type=int, default=0, help="Random seed (random mode)")
     ap.add_argument("--duration", type=float, default=None, help="Override runner.seconds (optional)")
@@ -150,6 +156,8 @@ def main() -> int:
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     src_dir = os.path.join(repo_root, "src")
+
+    compute_score_fn = _import_compute_score(repo_root)
 
     base_cfg = _load_yaml(os.path.join(repo_root, args.config))
     runner_cfg = (base_cfg.get("runner") or {})
@@ -216,6 +224,8 @@ def main() -> int:
             cfg_runner["seconds"] = float(args.duration)
         cfg_runner["control_dt"] = float(p["control_dt"])
         cfg_runner["settle_steps"] = int(p["settle_steps"])
+        base_seed = int((runner_cfg.get("seed", 0) or 0))
+        cfg_runner["seed"] = base_seed
 
         # Support both controller layouts:
         #  - legacy: controller.{kp,kd,tau_limit}
@@ -250,58 +260,89 @@ def main() -> int:
         if args.no_gui:
             cmd.append("--no-gui")
 
-        before = _find_latest_log(os.path.join(repo_root, args.log_dir), args.prefix)
-        before_mtime = os.path.getmtime(before) if before else 0.0
+        repeats = max(1, int(args.repeats))
+        print(f"\n== Trial {i}/{len(planned_params)} == {p} (repeats={repeats})")
 
-        print(f"\n== Trial {i}/{len(planned_params)} == {p}")
-        rc = _run(cmd, cwd=src_dir)
-        if rc != 0:
-            tr = TrialResult(
-                idx=i,
-                params=p,
-                log_path=None,
-                status=f"EXIT_{rc}",
-                survival_time=0.0,
-                tilt_max_abs=None,
-                base_z_min=None,
-                energy=None,
-                abort_reason=f"process exited {rc}",
-            )
-            results.append(tr)
-            continue
+        statuses: List[str] = []
+        survivals: List[float] = []
+        scores: List[float] = []
+        tilts: List[float] = []
+        energies: List[float] = []
+        abort_reasons: List[str] = []
+        log_paths: List[str] = []
 
-        latest = _find_latest_log(os.path.join(repo_root, args.log_dir), args.prefix)
-        if latest is None:
-            tr = TrialResult(
-                idx=i,
-                params=p,
-                log_path=None,
-                status="NO_LOG",
-                survival_time=0.0,
-                tilt_max_abs=None,
-                base_z_min=None,
-                energy=None,
-                abort_reason="no log found",
-            )
-            results.append(tr)
-            continue
+        for r in range(repeats):
+            before = _find_latest_log(os.path.join(repo_root, args.log_dir), args.prefix)
+            before_mtime = os.path.getmtime(before) if before else 0.0
 
-        latest_mtime = os.path.getmtime(latest)
-        if latest_mtime <= before_mtime:
-            tr = _extract_trial(latest, i, p)
-            tr.status = tr.status + "_STALELOG"
-        else:
-            tr = _extract_trial(latest, i, p)
+            # Update seed per repeat (if the main loop consumes it, enables reproducibility).
+            cfg2 = _load_yaml(cfg_path)
+            cfg_runner2 = (cfg2.get("runner") or {})
+            cfg_runner2["seed"] = base_seed + r
+            cfg2["runner"] = cfg_runner2
+            _dump_yaml(cfg_path, cfg2)
+
+            rc = _run(cmd, cwd=src_dir)
+            if rc != 0:
+                statuses.append(f"EXIT_{rc}")
+                survivals.append(0.0)
+                scores.append(0.0)
+                abort_reasons.append(f"process exited {rc}")
+                continue
+
+            latest = _find_latest_log(os.path.join(repo_root, args.log_dir), args.prefix)
+            if latest is None:
+                statuses.append("NO_LOG")
+                survivals.append(0.0)
+                scores.append(0.0)
+                abort_reasons.append("no log found")
+                continue
+
+            latest_mtime = os.path.getmtime(latest)
+            status, metrics, survival, tilt, energy, reason = _extract_single(latest, compute_score_fn)
+            if latest_mtime <= before_mtime:
+                status = status + "_STALELOG"
+
+            statuses.append(status)
+            survivals.append(float(survival))
+            scores.append(float(compute_score_fn(metrics, status.replace("_STALELOG", ""))))
+            if tilt is not None:
+                tilts.append(float(tilt))
+            if energy is not None:
+                energies.append(float(energy))
+            if reason is not None:
+                abort_reasons.append(str(reason))
+            log_paths.append(latest)
+
+        success_count = sum(1 for s in statuses if str(s).upper().startswith("DONE"))
+        survival_mean = sum(survivals) / len(survivals) if survivals else 0.0
+        survival_min = min(survivals) if survivals else 0.0
+        score_mean = sum(scores) / len(scores) if scores else 0.0
+        tilt_mean = (sum(tilts) / len(tilts)) if tilts else None
+        energy_mean = (sum(energies) / len(energies)) if energies else None
+
+        tr = TrialResult(
+            idx=i,
+            params=p,
+            repeats=repeats,
+            success_count=success_count,
+            status=f"{'DONE' if success_count==repeats else 'ABORT'}@{success_count}/{repeats}",
+            survival_mean=float(survival_mean),
+            survival_min=float(survival_min),
+            score_mean=float(score_mean),
+            tilt_mean=float(tilt_mean) if tilt_mean is not None else None,
+            energy_mean=float(energy_mean) if energy_mean is not None else None,
+            abort_reasons=abort_reasons,
+            log_paths=log_paths,
+        )
 
         results.append(tr)
-
-        sc = _score(tr)
         print(
-            f"  status={tr.status} survival={tr.survival_time:.3f} "
-            f"tilt={tr.tilt_max_abs if tr.tilt_max_abs is not None else '-'} "
-            f"score={sc:.3f} log={os.path.basename(latest) if latest else '-'}"
+            f"  {tr.status}  survival_mean={tr.survival_mean:.3f}  survival_min={tr.survival_min:.3f}  "
+            f"score_mean={tr.score_mean:.3f}  tilt_mean={tr.tilt_mean if tr.tilt_mean is not None else '-'}"
         )
-        if best is None or sc > _score(best):
+
+        if best is None or _score(tr) > _score(best):
             best = tr
 
     if best is None:
@@ -332,9 +373,11 @@ def main() -> int:
     print("\n== Best ==")
     print("  params:", best.params)
     print("  status:", best.status)
-    print("  survival:", best.survival_time)
-    print("  tilt_max:", best.tilt_max_abs)
-    print("  log:", best.log_path)
+    print("  survival_mean:", best.survival_mean)
+    print("  survival_min:", best.survival_min)
+    print("  score_mean:", best.score_mean)
+    print("  tilt_mean:", best.tilt_mean)
+    print("  logs:", best.log_paths[-3:] if best.log_paths else [])
     print("  wrote:", args.best_out)
 
     summary_path = os.path.join(repo_root, args.log_dir, "sweep_summary.json")
@@ -344,21 +387,28 @@ def main() -> int:
                 "best": {
                     "params": best.params,
                     "status": best.status,
-                    "survival_time": best.survival_time,
-                    "tilt_max_abs": best.tilt_max_abs,
-                    "log_path": best.log_path,
+                    "repeats": best.repeats,
+                    "success_count": best.success_count,
+                    "survival_mean": best.survival_mean,
+                    "survival_min": best.survival_min,
+                    "score_mean": best.score_mean,
+                    "tilt_mean": best.tilt_mean,
+                    "log_paths": best.log_paths,
                 },
                 "results": [
                     {
                         "idx": r.idx,
                         "params": r.params,
                         "status": r.status,
-                        "survival_time": r.survival_time,
-                        "tilt_max_abs": r.tilt_max_abs,
-                        "base_z_min": r.base_z_min,
-                        "energy": r.energy,
-                        "abort_reason": r.abort_reason,
-                        "log_path": r.log_path,
+                        "repeats": r.repeats,
+                        "success_count": r.success_count,
+                        "survival_mean": r.survival_mean,
+                        "survival_min": r.survival_min,
+                        "score_mean": r.score_mean,
+                        "tilt_mean": r.tilt_mean,
+                        "energy_mean": r.energy_mean,
+                        "abort_reasons": r.abort_reasons[:10],
+                        "log_paths": r.log_paths[-3:],
                     }
                     for r in results
                 ],

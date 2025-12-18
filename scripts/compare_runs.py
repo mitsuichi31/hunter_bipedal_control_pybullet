@@ -9,11 +9,26 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
+def _import_compute_score(repo_root: str):
+    """
+    Import src/ext_metrics.py without requiring installation.
+    """
+    import sys
+
+    src_dir = os.path.join(repo_root, "src")
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    from ext_metrics import compute_score  # type: ignore
+
+    return compute_score
+
+
 @dataclass
 class RunSummary:
     path: str
     mtime: float
     status: str
+    score: Optional[float]
     survival_time: Optional[float]
     tilt_max_abs: Optional[float]
     base_z_min: Optional[float]
@@ -37,7 +52,7 @@ def _load_json(path: str) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _summarize_run(path: str) -> Optional[RunSummary]:
+def _summarize_run(path: str, compute_score_fn) -> Optional[RunSummary]:
     try:
         payload = _load_json(path)
     except Exception:
@@ -58,10 +73,19 @@ def _summarize_run(path: str) -> Optional[RunSummary]:
     if isinstance(abort, dict):
         reason = abort.get("reason")
 
+    score = None
+    try:
+        score = float(
+            compute_score_fn(metrics if isinstance(metrics, dict) else {}, str(result.get("status", "UNKNOWN")))
+        )
+    except Exception:
+        score = None
+
     return RunSummary(
         path=path,
         mtime=os.path.getmtime(path),
         status=str(result.get("status", "UNKNOWN")) if isinstance(result, dict) else "UNKNOWN",
+        score=score,
         survival_time=float(st) if st is not None else None,
         tilt_max_abs=float(tilt) if tilt is not None else None,
         base_z_min=float(zmin) if zmin is not None else None,
@@ -102,6 +126,7 @@ def _print_table(rows: List[RunSummary], limit: int):
         "rank",
         "time",
         "status",
+        "score",
         "survival_s",
         "tilt_max(rad)",
         "base_z_min",
@@ -118,6 +143,7 @@ def _print_table(rows: List[RunSummary], limit: int):
                 str(i),
                 _fmt_time(r.mtime),
                 r.status,
+                _fmt(r.score, 3),
                 _fmt(r.survival_time, 3),
                 _fmt(r.tilt_max_abs, 3),
                 _fmt(r.base_z_min, 3),
@@ -153,10 +179,13 @@ def main():
     ap.add_argument(
         "--sort-by",
         default="mtime",
-        choices=["mtime", "survival", "tilt", "energy"],
+        choices=["mtime", "survival", "score", "tilt", "energy"],
         help="Sort criterion (default: newest first)",
     )
     args = ap.parse_args()
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    compute_score_fn = _import_compute_score(repo_root)
 
     paths = _find_logs(args.log_dir, args.prefix)
     if not paths:
@@ -165,7 +194,7 @@ def main():
 
     runs: List[RunSummary] = []
     for p in paths:
-        s = _summarize_run(p)
+        s = _summarize_run(p, compute_score_fn)
         if s is not None:
             runs.append(s)
 
@@ -177,6 +206,8 @@ def main():
         runs.sort(key=lambda r: r.mtime, reverse=True)
     elif args.sort_by == "survival":
         runs.sort(key=lambda r: (r.survival_time is None, -(r.survival_time or 0.0), -r.mtime))
+    elif args.sort_by == "score":
+        runs.sort(key=lambda r: (r.score is None, -(r.score or 0.0), -r.mtime))
     elif args.sort_by == "tilt":
         runs.sort(key=lambda r: (r.tilt_max_abs is None, (r.tilt_max_abs or 0.0), -r.mtime))
     elif args.sort_by == "energy":
@@ -190,4 +221,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
