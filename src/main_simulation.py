@@ -1198,7 +1198,7 @@ def run_walking_simulation(duration: float = 20.0, use_gui: bool = True, disable
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hunter bipedal robot walking simulation")
     parser.add_argument("--mode", type=str, default="standing",
-                       choices=["standing", "standing-mpc", "wbc", "walking"],
+                       choices=["standing", "standing-mpc", "wbc", "walking", "standing-pd-ext"],
                        help="Simulation mode")
     parser.add_argument("--duration", type=float, default=10.0,
                        help="Simulation duration (seconds)")
@@ -1219,6 +1219,45 @@ if __name__ == "__main__":
         run_standing_test(duration=args.duration, use_gui=use_gui)
     elif args.mode == "standing-mpc":
         run_standing_test_mpc(duration=args.duration, use_gui=use_gui)
+    elif args.mode == "standing-pd-ext":
+        task_config = load_task_config()
+        physics_params, command_limits = _build_physics_and_limits(task_config)
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
+
+        sim = HunterSimulation(
+            urdf_path=urdf_path,
+            dt=0.001,
+            use_gui=use_gui,
+            physics_params=physics_params,
+            command_limits=command_limits,
+        )
+        sim.connect(enable_stable_contacts=True)
+        sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
+
+        # Disable default motors to avoid interference with torque control.
+        for joint_name in STANDING_CONFIG.keys():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                p.setJointMotorControl2(
+                    bodyIndex=sim.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    force=0.0
+                )
+
+        sim.reset_robot(position=[0, 0, BASE_HEIGHT], joint_positions=STANDING_CONFIG)
+
+        from ext_pd_posture_torque import PDPostureTorque
+        from ext_runner import run
+        from ext_standing_ref import standing_q_ref
+
+        controller = PDPostureTorque(standing_q_ref())
+        result = run(sim, controller, seconds=args.duration, control_dt=0.01)
+        print(result)
+
+        sim.disconnect()
     elif args.mode == "wbc":
         run_wbc_test(duration=args.duration, use_gui=use_gui)
     elif args.mode == "walking":
