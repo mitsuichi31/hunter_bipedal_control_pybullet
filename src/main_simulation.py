@@ -1296,7 +1296,7 @@ if __name__ == "__main__":
             settle_steps=settle_steps,
             log_dir=log_dir,
             run_name=run_name,
-            safety=safety_cfg,
+            safety_cfg=safety_cfg,
         )
         print(result)
 

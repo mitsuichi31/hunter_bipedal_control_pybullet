@@ -54,7 +54,7 @@ def run(
     settle_steps: int = 0,
     log_dir: str = "runs",
     run_name: str = "standing_pd_ext",
-    safety: Optional[Dict[str, Any]] = None,
+    safety_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run an external controller against HunterSimulation for a fixed duration.
@@ -77,7 +77,8 @@ def run(
         steps += 1
 
     abort_info = None
-    safety_kwargs = safety or {}
+    # Safety thresholds are passed through to should_abort(obs, **kwargs)
+    safety_cfg = safety_cfg or {}
 
     while True:
         raw = sim.get_observations()
@@ -86,7 +87,7 @@ def run(
         if obs.t >= end_t:
             break
 
-        abort, reason = should_abort(obs, **safety_kwargs)
+        abort, reason = should_abort(obs, **safety_cfg)
         if abort:
             abort_info = {"t": float(obs.t), "reason": reason}
             break
