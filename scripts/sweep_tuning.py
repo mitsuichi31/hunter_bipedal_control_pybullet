@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import hashlib
 import os
 import random
 import subprocess
@@ -171,6 +172,12 @@ def main() -> int:
     ap.add_argument("--grav", default="0,1", help="Comma-separated use_gravity_comp candidates: 0 or 1 (two_stage)")
     ap.add_argument("--grav-scale", default="1.0", help="Comma-separated gravity_scale candidates (two_stage)")
     ap.add_argument("--kd-blend", default="1.0", help="Comma-separated kd_blend_factor candidates (two_stage)")
+    ap.add_argument(
+        "--grid-sample",
+        default="spread",
+        choices=["spread", "random"],
+        help="How to downsample grid when --trials < full grid size",
+    )
 
     ap.add_argument("--kp", default="20,40,60,80,100,120", help="Comma-separated kp candidates (grid)")
     ap.add_argument("--kd", default="0.5,1.0,1.5,2.0,3.0,4.0", help="Comma-separated kd candidates (grid)")
@@ -202,14 +209,61 @@ def main() -> int:
     grav_scales = _mk_grid(parse_floats(args.grav_scale))
     kd_blends = _mk_grid(parse_floats(args.kd_blend))
 
+    def _stable_hash(x: Any) -> str:
+        # Stable, deterministic ordering independent of Python's hash randomization.
+        b = repr(x).encode("utf-8")
+        return hashlib.md5(b).hexdigest()
+
+    def _downsample_grid(all_params: List[Any], k: int) -> List[Any]:
+        """
+        Downsample a full-factorial grid to k points with less bias than naive step slicing.
+        - spread: hash-sort then take evenly spaced indices (deterministic)
+        - random: deterministic shuffle by seed then take first k
+        """
+        if k <= 0:
+            return []
+        if len(all_params) <= k:
+            return all_params
+
+        if args.grid_sample == "random":
+            rng = random.Random(args.seed)
+            tmp = list(all_params)
+            rng.shuffle(tmp)
+            return tmp[:k]
+
+        # spread (default): hash-sort then evenly pick indices
+        tmp = sorted(all_params, key=_stable_hash)
+        if k == 1:
+            return [tmp[len(tmp) // 2]]
+
+        n = len(tmp)
+        picks = []
+        for i in range(k):
+            idx = int(round(i * (n - 1) / (k - 1)))
+            picks.append(tmp[idx])
+
+        # De-dup in case of rounding collisions; fill from front if needed.
+        seen = set()
+        out = []
+        for p in picks:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        for p in tmp:
+            if len(out) >= k:
+                break
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
     planned_params: List[Dict[str, Any]] = []
 
     if args.mode == "grid":
         all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups, blends, grav_flags, grav_scales, kd_blends))
         max_grid = max(1, args.trials)
         if len(all_params) > max_grid:
-            step = max(1, len(all_params) // max_grid)
-            all_params = all_params[::step][:max_grid]
+            all_params = _downsample_grid(all_params, max_grid)
         for kp, kd, tau, dt, settle, warmup, blend, grav, gscale, kd_blend in all_params:
             planned_params.append(
                 {
@@ -225,6 +279,22 @@ def main() -> int:
                     "kd_blend_factor": float(kd_blend),
                 }
             )
+
+        try:
+            used = {
+                "kp": sorted({p["kp"] for p in planned_params}),
+                "kd": sorted({p["kd"] for p in planned_params}),
+                "tau_limit": sorted({p["tau_limit"] for p in planned_params}),
+                "settle_steps": sorted({p["settle_steps"] for p in planned_params}),
+                "warmup_seconds": sorted({p["warmup_seconds"] for p in planned_params}),
+                "blend_seconds": sorted({p["blend_seconds"] for p in planned_params}),
+                "use_gravity_comp": sorted({p["use_gravity_comp"] for p in planned_params}),
+                "gravity_scale": sorted({p["gravity_scale"] for p in planned_params}),
+                "kd_blend_factor": sorted({p["kd_blend_factor"] for p in planned_params}),
+            }
+            print("[grid] actual coverage:", used)
+        except Exception:
+            pass
     else:
         random.seed(args.seed)
         for _ in range(args.trials):
