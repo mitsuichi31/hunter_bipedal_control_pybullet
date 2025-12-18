@@ -146,6 +146,8 @@ def main() -> int:
     ap.add_argument("--no-gui", action="store_true", help="Force --no-gui for main_simulation.py")
     ap.add_argument("--dry-run", action="store_true", help="Print planned trials but do not run")
     ap.add_argument("--warmup", default="1.0", help="Comma-separated warmup_seconds candidates (two_stage)")
+    ap.add_argument("--grav", default="0,1", help="Comma-separated use_gravity_comp candidates: 0 or 1 (two_stage)")
+    ap.add_argument("--grav-scale", default="1.0", help="Comma-separated gravity_scale candidates (two_stage)")
 
     ap.add_argument("--kp", default="20,40,60,80,100,120", help="Comma-separated kp candidates (grid)")
     ap.add_argument("--kd", default="0.5,1.0,1.5,2.0,3.0,4.0", help="Comma-separated kd candidates (grid)")
@@ -172,16 +174,18 @@ def main() -> int:
     dts = _mk_grid(parse_floats(args.control_dt))
     settles = [int(float(x)) for x in args.settle.split(",") if x.strip()]
     warmups = _mk_grid(parse_floats(args.warmup))
+    grav_flags = [int(float(x)) for x in args.grav.split(",") if x.strip()]
+    grav_scales = _mk_grid(parse_floats(args.grav_scale))
 
     planned_params: List[Dict[str, Any]] = []
 
     if args.mode == "grid":
-        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups))
+        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups, grav_flags, grav_scales))
         max_grid = max(1, args.trials)
         if len(all_params) > max_grid:
             step = max(1, len(all_params) // max_grid)
             all_params = all_params[::step][:max_grid]
-        for kp, kd, tau, dt, settle, warmup in all_params:
+        for kp, kd, tau, dt, settle, warmup, grav, gscale in all_params:
             planned_params.append(
                 {
                     "kp": kp,
@@ -190,6 +194,8 @@ def main() -> int:
                     "control_dt": dt,
                     "settle_steps": settle,
                     "warmup_seconds": warmup,
+                    "use_gravity_comp": bool(int(grav)),
+                    "gravity_scale": float(gscale),
                 }
             )
     else:
@@ -203,6 +209,8 @@ def main() -> int:
                     "control_dt": random.choice(dts),
                     "settle_steps": random.choice(settles),
                     "warmup_seconds": random.choice(warmups),
+                    "use_gravity_comp": bool(int(random.choice(grav_flags))),
+                    "gravity_scale": float(random.choice(grav_scales)),
                 }
             )
 
@@ -237,6 +245,10 @@ def main() -> int:
             torque_block["kp"] = float(p["kp"])
             torque_block["kd"] = float(p["kd"])
             torque_block["tau_limit"] = float(p["tau_limit"])
+            torque_block["use_gravity_comp"] = bool(
+                p.get("use_gravity_comp", torque_block.get("use_gravity_comp", False))
+            )
+            torque_block["gravity_scale"] = float(p.get("gravity_scale", torque_block.get("gravity_scale", 1.0)))
             cfg_ctrl["torque"] = torque_block
         else:
             cfg_ctrl["kp"] = float(p["kp"])
@@ -360,6 +372,10 @@ def main() -> int:
         torque_block["kp"] = float(best.params["kp"])
         torque_block["kd"] = float(best.params["kd"])
         torque_block["tau_limit"] = float(best.params["tau_limit"])
+        torque_block["use_gravity_comp"] = bool(
+            best.params.get("use_gravity_comp", torque_block.get("use_gravity_comp", False))
+        )
+        torque_block["gravity_scale"] = float(best.params.get("gravity_scale", torque_block.get("gravity_scale", 1.0)))
         best_cfg_ctrl["torque"] = torque_block
     else:
         best_cfg_ctrl["kp"] = float(best.params["kp"])

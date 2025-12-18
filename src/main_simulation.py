@@ -1290,6 +1290,7 @@ if __name__ == "__main__":
             tau_cfg = (ctrl_cfg.get("torque") or {})
             controller = TwoStagePostureController(
                 q_ref,
+                robot_id=sim.robot_id,
                 warmup_seconds=warmup_seconds,
                 position_gains=PositionStageGains(
                     kp=float(pos_cfg.get("kp", 0.3)),
@@ -1299,6 +1300,8 @@ if __name__ == "__main__":
                     kp=float(tau_cfg.get("kp", 40.0)),
                     kd=float(tau_cfg.get("kd", 1.5)),
                     tau_limit=float(tau_cfg.get("tau_limit", 60.0)),
+                    use_gravity_comp=bool(tau_cfg.get("use_gravity_comp", False)),
+                    gravity_scale=float(tau_cfg.get("gravity_scale", 1.0)),
                 ),
             )
         else:
