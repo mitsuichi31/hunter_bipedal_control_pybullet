@@ -22,6 +22,9 @@ logs/*.log
 runs/
 src/runs/
 
+# Agent sweep outputs
+config/agent_tuning_best.yaml
+
 # OS
 .DS_Store
 Thumbs.db
