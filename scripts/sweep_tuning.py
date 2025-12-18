@@ -167,6 +167,7 @@ def main() -> int:
     ap.add_argument("--no-gui", action="store_true", help="Force --no-gui for main_simulation.py")
     ap.add_argument("--dry-run", action="store_true", help="Print planned trials but do not run")
     ap.add_argument("--warmup", default="1.0", help="Comma-separated warmup_seconds candidates (two_stage)")
+    ap.add_argument("--blend", default="0.0", help="Comma-separated blend_seconds candidates (two_stage)")
     ap.add_argument("--grav", default="0,1", help="Comma-separated use_gravity_comp candidates: 0 or 1 (two_stage)")
     ap.add_argument("--grav-scale", default="1.0", help="Comma-separated gravity_scale candidates (two_stage)")
 
@@ -195,18 +196,19 @@ def main() -> int:
     dts = _mk_grid(parse_floats(args.control_dt))
     settles = [int(float(x)) for x in args.settle.split(",") if x.strip()]
     warmups = _mk_grid(parse_floats(args.warmup))
+    blends = _mk_grid(parse_floats(args.blend))
     grav_flags = [int(float(x)) for x in args.grav.split(",") if x.strip()]
     grav_scales = _mk_grid(parse_floats(args.grav_scale))
 
     planned_params: List[Dict[str, Any]] = []
 
     if args.mode == "grid":
-        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups, grav_flags, grav_scales))
+        all_params = list(itertools.product(kps, kds, taus, dts, settles, warmups, blends, grav_flags, grav_scales))
         max_grid = max(1, args.trials)
         if len(all_params) > max_grid:
             step = max(1, len(all_params) // max_grid)
             all_params = all_params[::step][:max_grid]
-        for kp, kd, tau, dt, settle, warmup, grav, gscale in all_params:
+        for kp, kd, tau, dt, settle, warmup, blend, grav, gscale in all_params:
             planned_params.append(
                 {
                     "kp": kp,
@@ -215,6 +217,7 @@ def main() -> int:
                     "control_dt": dt,
                     "settle_steps": settle,
                     "warmup_seconds": warmup,
+                    "blend_seconds": blend,
                     "use_gravity_comp": bool(int(grav)),
                     "gravity_scale": float(gscale),
                 }
@@ -230,6 +233,7 @@ def main() -> int:
                     "control_dt": random.choice(dts),
                     "settle_steps": random.choice(settles),
                     "warmup_seconds": random.choice(warmups),
+                    "blend_seconds": random.choice(blends),
                     "use_gravity_comp": bool(int(random.choice(grav_flags))),
                     "gravity_scale": float(random.choice(grav_scales)),
                 }
@@ -262,6 +266,7 @@ def main() -> int:
         ctrl_type = str(cfg_ctrl.get("type", "torque_pd"))
         if ctrl_type == "two_stage":
             cfg_ctrl["warmup_seconds"] = float(p.get("warmup_seconds", cfg_ctrl.get("warmup_seconds", 1.0)))
+            cfg_ctrl["blend_seconds"] = float(p.get("blend_seconds", cfg_ctrl.get("blend_seconds", 0.0)))
             torque_block = dict(cfg_ctrl.get("torque") or {})
             torque_block["kp"] = float(p["kp"])
             torque_block["kd"] = float(p["kd"])
@@ -391,6 +396,7 @@ def main() -> int:
     best_cfg_runner["settle_steps"] = int(best.params["settle_steps"])
     if str(best_cfg_ctrl.get("type", "torque_pd")) == "two_stage":
         best_cfg_ctrl["warmup_seconds"] = float(best.params.get("warmup_seconds", best_cfg_ctrl.get("warmup_seconds", 1.0)))
+        best_cfg_ctrl["blend_seconds"] = float(best.params.get("blend_seconds", best_cfg_ctrl.get("blend_seconds", 0.0)))
         torque_block = dict(best_cfg_ctrl.get("torque") or {})
         torque_block["kp"] = float(best.params["kp"])
         torque_block["kd"] = float(best.params["kd"])

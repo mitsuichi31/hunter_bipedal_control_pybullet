@@ -25,6 +25,9 @@ controller:
 
   # Only used when type == "two_stage"
   warmup_seconds: 1.0
+  # Smooth transition from warmup(position) to hold(torque)
+  # 0.0 means "no blending" (instant switch; old behavior).
+  blend_seconds: 0.2
 
   # Warmup stage (POSITION_CONTROL)
   position:
@@ -39,4 +42,3 @@ controller:
     # Gravity compensation in hold stage (optional)
     use_gravity_comp: false
     gravity_scale: 1.0
-

@@ -28,11 +28,13 @@ class TorqueStageGains:
 class TwoStagePostureController:
     """
     Stage 1 (warmup): position control to quickly establish posture
+    Blend: smooth transition using hybrid command (position PD + ramped torque FF)
     Stage 2: torque PD to maintain posture
 
     Output format matches HunterSimulation.apply_hybrid_command():
       - position: {"mode":"position","value":..., "kp":..., "kd":...}
       - torque:   {"mode":"torque","value":...}
+      - hybrid:   {"mode":"hybrid","position":...,"velocity":...,"kp":...,"kd":...,"torque":...}
     """
 
     def __init__(
@@ -41,12 +43,14 @@ class TwoStagePostureController:
         *,
         robot_id: int,
         warmup_seconds: float = 1.0,
+        blend_seconds: float = 0.0,
         position_gains: PositionStageGains = PositionStageGains(),
         torque_gains: TorqueStageGains = TorqueStageGains(),
     ):
         assert q_ref.shape == (10,)
         self.q_ref = q_ref.astype(float)
         self.warmup_seconds = float(warmup_seconds)
+        self.blend_seconds = max(0.0, float(blend_seconds))
         self.pos_g = position_gains
         self.tau_g = torque_gains
         self._t0: Optional[float] = None
@@ -62,6 +66,22 @@ class TwoStagePostureController:
         if self._t0 is None:
             self._t0 = t
         return (t - self._t0) < self.warmup_seconds
+
+    def _in_blend(self, t: float) -> bool:
+        if self._t0 is None:
+            return False
+        if self.blend_seconds <= 0.0:
+            return False
+        dt = t - self._t0
+        return (dt >= self.warmup_seconds) and (dt < (self.warmup_seconds + self.blend_seconds))
+
+    def _blend_alpha(self, t: float) -> float:
+        """0 -> 1 across the blend window."""
+        if not self._in_blend(t):
+            return 1.0
+        assert self._t0 is not None
+        dt = (t - self._t0) - self.warmup_seconds
+        return float(np.clip(dt / max(1e-9, self.blend_seconds), 0.0, 1.0))
 
     def _gravity_ff(self, obs) -> np.ndarray:
         """
@@ -87,6 +107,24 @@ class TwoStagePostureController:
                     "value": float(qd),
                     "kp": float(self.pos_g.kp),
                     "kd": float(self.pos_g.kd),
+                }
+            return cmds
+
+        if self._in_blend(t):
+            a = self._blend_alpha(t)
+            tau_pd = self.tau_g.kp * (self.q_ref - obs.q) - self.tau_g.kd * obs.dq
+            tau_ff = (tau_pd + self._gravity_ff(obs)) * a
+            tau_ff = np.clip(tau_ff, -self.tau_g.tau_limit, self.tau_g.tau_limit)
+
+            cmds: Dict[str, Any] = {}
+            for i, j in enumerate(LEG_JOINTS):
+                cmds[j] = {
+                    "mode": "hybrid",
+                    "position": float(self.q_ref[i]),
+                    "velocity": 0.0,
+                    "kp": float(self.pos_g.kp),
+                    "kd": float(self.pos_g.kd),
+                    "torque": float(tau_ff[i]),
                 }
             return cmds
 

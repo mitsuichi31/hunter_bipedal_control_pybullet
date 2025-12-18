@@ -1286,12 +1286,14 @@ if __name__ == "__main__":
             )
 
             warmup_seconds = float(ctrl_cfg.get("warmup_seconds", 1.0))
+            blend_seconds = float(ctrl_cfg.get("blend_seconds", 0.0))
             pos_cfg = (ctrl_cfg.get("position") or {})
             tau_cfg = (ctrl_cfg.get("torque") or {})
             controller = TwoStagePostureController(
                 q_ref,
                 robot_id=sim.robot_id,
                 warmup_seconds=warmup_seconds,
+                blend_seconds=blend_seconds,
                 position_gains=PositionStageGains(
                     kp=float(pos_cfg.get("kp", 0.3)),
                     kd=float(pos_cfg.get("kd", 0.1)),
