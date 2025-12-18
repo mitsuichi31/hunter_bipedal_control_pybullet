@@ -1224,6 +1224,7 @@ if __name__ == "__main__":
         physics_params, command_limits = _build_physics_and_limits(task_config)
 
         script_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.abspath(os.path.join(script_dir, ".."))
         urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
         sim = HunterSimulation(
@@ -1256,7 +1257,7 @@ if __name__ == "__main__":
         from gravity_compensation import GravityCompensation
         import yaml
 
-        cfg_path = os.path.join(script_dir, "../config/agent_tuning.yaml")
+        cfg_path = os.path.join(repo_root, "config/agent_tuning.yaml")
         cfg = {}
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
@@ -1283,6 +1284,8 @@ if __name__ == "__main__":
         control_dt = float(runner_cfg.get("control_dt", 0.01))
         settle_steps = int(runner_cfg.get("settle_steps", 0))
         log_dir = str(runner_cfg.get("log_dir", "runs"))
+        if not os.path.isabs(log_dir):
+            log_dir = os.path.join(repo_root, log_dir)
         run_name = str(runner_cfg.get("run_name", "standing_pd_ext"))
 
         result = run(
