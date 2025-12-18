@@ -241,7 +241,7 @@ def main():
     ap.add_argument(
         "--sort-by",
         default="mtime",
-        choices=["mtime", "survival", "score", "tilt", "energy"],
+        choices=["mtime", "survival", "score", "tilt", "energy", "clip"],
         help="Sort criterion (default: newest first)",
     )
     ap.add_argument(
@@ -309,6 +309,23 @@ def main():
         runs.sort(key=lambda r: (r.tilt_max_abs is None, (r.tilt_max_abs or 0.0), -r.mtime))
     elif args.sort_by == "energy":
         runs.sort(key=lambda r: (r.energy_abs_tau_dq is None, (r.energy_abs_tau_dq or 0.0), -r.mtime))
+    elif args.sort_by == "clip":
+        # Lower saturation is better:
+        #   1) clip_mean asc
+        #   2) clip_max asc
+        #   3) score desc (tie-break)
+        #   4) newest last key
+        runs.sort(
+            key=lambda r: (
+                r.tau_clip_frac_mean is None,
+                (r.tau_clip_frac_mean or 1e9),
+                r.tau_clip_frac_max is None,
+                (r.tau_clip_frac_max or 1e9),
+                r.score is None,
+                -(r.score or 0.0),
+                -r.mtime,
+            )
+        )
 
     _print_table(runs, args.limit)
 
