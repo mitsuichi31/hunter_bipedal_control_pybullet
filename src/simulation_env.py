@@ -7,6 +7,7 @@ import pybullet_data
 import numpy as np
 import time
 from typing import Dict, List, Tuple, Optional, Any
+from collections import defaultdict
 
 
 class HunterSimulation:
@@ -431,6 +432,33 @@ class HunterSimulation:
             "contact_forces": self.get_contact_forces(),
             "foot_positions": self.get_foot_positions(),
         }
+
+    def get_contact_link_histogram(self) -> Dict[str, int]:
+        """
+        Return a histogram of robot link names that are in contact with the ground (or any other body).
+        Keys are link names (or 'base' for -1), values are contact point counts.
+        """
+        if self.robot_id is None:
+            return {}
+        pts = p.getContactPoints(bodyA=self.robot_id)
+        if not pts:
+            return {}
+
+        hist = defaultdict(int)
+        for cp in pts:
+            link_idx = cp[3]  # linkIndexA
+            if link_idx == -1:
+                name = "base"
+            else:
+                try:
+                    ji = p.getJointInfo(self.robot_id, link_idx)
+                    raw = ji[12]
+                    name = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+                except Exception:
+                    name = f"link_{link_idx}"
+            hist[name] += 1
+
+        return dict(hist)
 
     def apply_hybrid_command(self, commands: Dict[str, Any]):
         """

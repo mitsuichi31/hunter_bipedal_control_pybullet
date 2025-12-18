@@ -11,6 +11,7 @@ from ext_obs_adapter import adapt_obs
 from ext_safety import quat_to_rpy_xyzw, should_abort
 from ext_metrics import compute_metrics
 
+import math
 import json
 import os
 import time as _time
@@ -26,6 +27,80 @@ def _now_tag() -> str:
 
 def _to_list3(x) -> list:
     return [float(x[0]), float(x[1]), float(x[2])]
+
+
+def _q_err_rms(obs, controller) -> Optional[float]:
+    """
+    RMS joint error to controller.q_ref if available.
+    Assumes obs.q is (10,) in ext_joints.LEG_JOINTS order.
+    """
+    try:
+        q_ref = getattr(controller, "q_ref", None)
+        q = getattr(obs, "q", None)
+        if q_ref is None or q is None:
+            return None
+        if len(q_ref) != len(q):
+            return None
+        sse = 0.0
+        for a, b in zip(q_ref, q):
+            d = float(a) - float(b)
+            sse += d * d
+        return math.sqrt(sse / float(max(1, len(q_ref))))
+    except Exception:
+        return None
+
+
+def _norm2_xy(xy) -> Optional[float]:
+    try:
+        x = float(xy[0])
+        y = float(xy[1])
+        return math.sqrt(x * x + y * y)
+    except Exception:
+        return None
+
+
+def _extract_contact_and_feet(obs) -> Dict[str, Any]:
+    """
+    Extract contact/feet features for diagnostics.
+
+    Expected obs fields:
+      - obs.contact_forces: {"left": np(3,), "right": np(3,)}  (sum force)
+      - obs.foot_pos: {"left": np(3,), "right": np(3,)}
+    """
+    out: Dict[str, Any] = {}
+    try:
+        cf = getattr(obs, "contact_forces", None) or {}
+        fp = getattr(obs, "foot_pos", None) or {}
+        lf = cf.get("left") if isinstance(cf, dict) else None
+        rf = cf.get("right") if isinstance(cf, dict) else None
+        lpos = fp.get("left") if isinstance(fp, dict) else None
+        rpos = fp.get("right") if isinstance(fp, dict) else None
+
+        if lf is not None:
+            out["fz_left"] = float(lf[2])
+            fxy = _norm2_xy(lf[:2])
+            if fxy is not None:
+                out["fxy_left"] = float(fxy)
+        if rf is not None:
+            out["fz_right"] = float(rf[2])
+            fxy = _norm2_xy(rf[:2])
+            if fxy is not None:
+                out["fxy_right"] = float(fxy)
+
+        if lpos is not None:
+            out["foot_lx"] = float(lpos[0])
+            out["foot_ly"] = float(lpos[1])
+            out["foot_lz"] = float(lpos[2])
+        if rpos is not None:
+            out["foot_rx"] = float(rpos[0])
+            out["foot_ry"] = float(rpos[1])
+            out["foot_rz"] = float(rpos[2])
+        if lpos is not None and rpos is not None:
+            out["foot_dy"] = abs(float(lpos[1]) - float(rpos[1]))
+    except Exception:
+        return out
+
+    return out
 
 
 def _extract_tau_limit(run_meta: Optional[Dict[str, Any]]) -> Optional[float]:
@@ -141,16 +216,62 @@ def run(
     updates = 0
     samples = []
 
-    # Optional settling period after reset (lets contacts stabilize).
-    for _ in range(max(0, int(settle_steps))):
-        sim.step()
-        steps += 1
-
     abort_info = None
     # Safety thresholds are passed through to should_abort(obs, **kwargs)
     safety_cfg = safety_cfg or {}
 
     tau_limit = _extract_tau_limit(run_meta)
+
+    # --- IMPORTANT ---
+    # If we "settle" the physics before sending ANY motor command, the robot can fall
+    # during settle_steps (e.g., 300 ticks = 0.3s). That makes warmup tuning pointless.
+    # So: apply an initial command once before settle.
+    try:
+        joint_cmds0 = controller.step(obs)
+        norm_cmds0 = normalize_joint_commands(joint_cmds0)
+        tau_clip_frac0, tau_clip_max_ratio0 = _compute_tau_clip_stats(norm_cmds0, tau_limit=tau_limit, eps_ratio=0.98)
+        sim.apply_hybrid_command(norm_cmds0)
+
+        r0, p0, y0 = quat_to_rpy_xyzw(obs.base_quat_xyzw)
+        s0 = {
+            "t": float(obs.t),
+            "control_dt": 0.0,
+            "base_pos": _to_list3(obs.base_pos),
+            "base_quat_xyzw": [float(v) for v in obs.base_quat_xyzw],
+            "rpy": [float(r0), float(p0), float(y0)],
+            "base_vel": _to_list3(obs.base_vel),
+            "base_omega": _to_list3(obs.base_omega),
+            "joint_pos": {k: float(v) for k, v in obs.joint_pos.items()},
+            "joint_vel": {k: float(v) for k, v in obs.joint_vel.items()},
+            "contact_forces": {k: _to_list3(v) for k, v in obs.contact_forces.items()},
+            "foot_pos": {k: _to_list3(v) for k, v in obs.foot_pos.items()},
+            "tau": _tau_from_normalized_cmds(norm_cmds0),
+            "status": "INIT_CMD",
+        }
+        s0.update(_extract_contact_and_feet(obs))
+        # Contact histogram at reset/initial command (can be empty).
+        try:
+            hist0 = sim.get_contact_link_histogram()
+            top0 = sorted(hist0.items(), key=lambda kv: kv[1], reverse=True)[:6] if hist0 else []
+            s0["contact_links_top"] = [f"{k}:{v}" for k, v in top0]
+        except Exception:
+            s0["contact_links_top"] = []
+        qe0 = _q_err_rms(obs, controller)
+        if qe0 is not None:
+            s0["q_err_rms"] = float(qe0)
+        if tau_clip_frac0 is not None:
+            s0["tau_clip_frac"] = float(tau_clip_frac0)
+        if tau_clip_max_ratio0 is not None:
+            s0["tau_clip_max_ratio"] = float(tau_clip_max_ratio0)
+        samples.append(s0)
+    except Exception:
+        # Continue anyway; the main loop will try again.
+        pass
+
+    # Optional settling period after reset (lets contacts stabilize).
+    for _ in range(max(0, int(settle_steps))):
+        sim.step()
+        steps += 1
 
     while True:
         raw = sim.get_observations()
@@ -174,6 +295,7 @@ def run(
 
             r, p, y = quat_to_rpy_xyzw(obs.base_quat_xyzw)
             s = {
+                "status": "RUN",
                 "t": float(obs.t),
                 "control_dt": float(control_dt),
                 "base_pos": _to_list3(obs.base_pos),
@@ -187,6 +309,17 @@ def run(
                 "foot_pos": {k: _to_list3(v) for k, v in obs.foot_pos.items()},
                 "tau": _tau_from_normalized_cmds(norm_cmds),
             }
+            s.update(_extract_contact_and_feet(obs))
+            # Link contact histogram (top-K), for debugging "not touching with feet"
+            try:
+                hist = sim.get_contact_link_histogram()
+                top = sorted(hist.items(), key=lambda kv: kv[1], reverse=True)[:6] if hist else []
+                s["contact_links_top"] = [f"{k}:{v}" for k, v in top]
+            except Exception:
+                s["contact_links_top"] = []
+            qe = _q_err_rms(obs, controller)
+            if qe is not None:
+                s["q_err_rms"] = float(qe)
             if tau_clip_frac is not None:
                 s["tau_clip_frac"] = float(tau_clip_frac)
             if tau_clip_max_ratio is not None:

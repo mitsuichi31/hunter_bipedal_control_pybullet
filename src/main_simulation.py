@@ -16,7 +16,7 @@ import numpy as np
 import argparse
 import pybullet as p
 
-from robot_constants import BASE_HEIGHT, STANDING_CONFIG, standing_config_copy
+from robot_constants import BASE_HEIGHT, STANDING_CONFIG, get_stance_config, standing_config_copy
 from simulation_env import HunterSimulation
 from pd_controller import MultiJointPDController
 from inverse_kinematics import BipedalIKSolver
@@ -1228,34 +1228,6 @@ if __name__ == "__main__":
         repo_root = os.path.abspath(os.path.join(script_dir, ".."))
         urdf_path = os.path.join(script_dir, "../models/urdf/hunter.urdf")
 
-        sim = HunterSimulation(
-            urdf_path=urdf_path,
-            dt=0.001,
-            use_gui=use_gui,
-            physics_params=physics_params,
-            command_limits=command_limits,
-        )
-        sim.connect(enable_stable_contacts=True)
-        sim.load_robot(start_position=[0, 0, BASE_HEIGHT])
-
-        # Disable default motors to avoid interference with torque control.
-        for joint_name in STANDING_CONFIG.keys():
-            joint_idx = sim.get_joint_index(joint_name)
-            if joint_idx is not None:
-                p.setJointMotorControl2(
-                    bodyIndex=sim.robot_id,
-                    jointIndex=joint_idx,
-                    controlMode=p.VELOCITY_CONTROL,
-                    force=0.0
-                )
-
-        sim.reset_robot(position=[0, 0, BASE_HEIGHT], joint_positions=STANDING_CONFIG)
-
-        from ext_pd_posture_torque import PDPostureTorque
-        from ext_runner import run
-        from ext_standing_ref import standing_q_ref
-        from ext_pd_posture_torque import TorquePD
-        from gravity_compensation import GravityCompensation
         import yaml
 
         cfg_path = os.path.join(repo_root, "config/agent_tuning.yaml")
@@ -1270,12 +1242,65 @@ if __name__ == "__main__":
         ctrl_cfg = (cfg.get("controller") or {})
         safety_cfg = (cfg.get("safety") or {})
 
+        base_h = runner_cfg.get("base_height", None)
+        try:
+            base_h = float(base_h) if base_h is not None else None
+        except Exception:
+            base_h = None
+        if base_h is None:
+            base_h = BASE_HEIGHT
+
+        stance_name = str(ctrl_cfg.get("stance", "standing"))
+        crouch_knee = ctrl_cfg.get("crouch_knee", None)
+        crouch_ankle = ctrl_cfg.get("crouch_ankle", None)
+
+        ctrl_cfg.setdefault("stance", stance_name)
+        if crouch_knee is not None:
+            ctrl_cfg.setdefault("crouch_knee", crouch_knee)
+        if crouch_ankle is not None:
+            ctrl_cfg.setdefault("crouch_ankle", crouch_ankle)
+
+        from ext_standing_ref import stance_joint_targets
+
+        target_positions = stance_joint_targets(
+            stance_name, crouch_knee=crouch_knee, crouch_ankle=crouch_ankle
+        )
+
+        sim = HunterSimulation(
+            urdf_path=urdf_path,
+            dt=0.001,
+            use_gui=use_gui,
+            physics_params=physics_params,
+            command_limits=command_limits,
+        )
+        sim.connect(enable_stable_contacts=True)
+        sim.load_robot(start_position=[0, 0, base_h])
+
+        # Disable default motors to avoid interference with torque control.
+        for joint_name in STANDING_CONFIG.keys():
+            joint_idx = sim.get_joint_index(joint_name)
+            if joint_idx is not None:
+                p.setJointMotorControl2(
+                    bodyIndex=sim.robot_id,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    force=0.0
+                )
+
+        sim.reset_robot(position=[0, 0, base_h], joint_positions=target_positions)
+
+        from ext_pd_posture_torque import PDPostureTorque
+        from ext_runner import run
+        from ext_standing_ref import stance_q_ref
+        from ext_pd_posture_torque import TorquePD
+        from gravity_compensation import GravityCompensation
+
         # Seed (reproducibility)
         seed = int(runner_cfg.get("seed", 0) or 0)
         random.seed(seed)
         np.random.seed(seed)
 
-        q_ref = standing_q_ref()
+        q_ref = stance_q_ref(stance_name, crouch_knee=crouch_knee, crouch_ankle=crouch_ankle)
 
         ctrl_type = str(ctrl_cfg.get("type", "torque_pd"))
         if ctrl_type == "two_stage":
@@ -1320,7 +1345,10 @@ if __name__ == "__main__":
                 gravity_comp=GravityCompensation(sim.robot_id),
             )
 
-        seconds = float(runner_cfg.get("seconds", args.duration))
+        runner_cfg_effective = dict(runner_cfg)
+        runner_cfg_effective["base_height"] = float(base_h)
+
+        seconds = float(runner_cfg_effective.get("seconds", args.duration))
         control_dt = float(runner_cfg.get("control_dt", 0.01))
         settle_steps = int(runner_cfg.get("settle_steps", 0))
         log_dir = str(runner_cfg.get("log_dir", "runs"))
@@ -1337,7 +1365,7 @@ if __name__ == "__main__":
             log_dir=log_dir,
             run_name=run_name,
             safety_cfg=safety_cfg,
-            run_meta={"seed": seed, "runner": runner_cfg, "controller": ctrl_cfg, "safety": safety_cfg},
+            run_meta={"seed": seed, "runner": runner_cfg_effective, "controller": ctrl_cfg, "safety": safety_cfg},
         )
         print(result)
 

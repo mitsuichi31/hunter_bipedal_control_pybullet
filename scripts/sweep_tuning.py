@@ -175,6 +175,24 @@ def main() -> int:
     ap.add_argument("--pos-kp", default=None, help="Comma-separated warmup position kp candidates (two_stage)")
     ap.add_argument("--pos-kd", default=None, help="Comma-separated warmup position kd candidates (two_stage)")
     ap.add_argument(
+        "--stance",
+        default="standing",
+        help="Comma-separated stance candidates: standing,crouch_pos,crouch_neg",
+    )
+    ap.add_argument(
+        "--crouch-knee",
+        default=None,
+        help="Comma-separated crouch knee magnitudes (used when stance is crouch_*)",
+    )
+    ap.add_argument(
+        "--crouch-ankle",
+        default=None,
+        help="Comma-separated crouch ankle magnitudes (used when stance is crouch_*)",
+    )
+    ap.add_argument("--max-roll", default=None, help="Comma-separated safety max_roll (rad) overrides")
+    ap.add_argument("--max-pitch", default=None, help="Comma-separated safety max_pitch (rad) overrides")
+    ap.add_argument("--base-height", default=None, help="Comma-separated runner base_height overrides (m)")
+    ap.add_argument(
         "--grid-sample",
         default="spread",
         choices=["spread", "random"],
@@ -212,6 +230,14 @@ def main() -> int:
     kd_blends = _mk_grid(parse_floats(args.kd_blend))
     pos_kps = _mk_grid(parse_floats(args.pos_kp)) if args.pos_kp is not None else None
     pos_kds = _mk_grid(parse_floats(args.pos_kd)) if args.pos_kd is not None else None
+    stances = [s.strip() for s in str(args.stance).split(",") if s.strip()]
+    if not stances:
+        stances = ["standing"]
+    crouch_knees = _mk_grid(parse_floats(args.crouch_knee)) if args.crouch_knee is not None else None
+    crouch_ankles = _mk_grid(parse_floats(args.crouch_ankle)) if args.crouch_ankle is not None else None
+    max_rolls = _mk_grid(parse_floats(args.max_roll)) if args.max_roll is not None else None
+    max_pitches = _mk_grid(parse_floats(args.max_pitch)) if args.max_pitch is not None else None
+    base_heights = _mk_grid(parse_floats(args.base_height)) if args.base_height is not None else None
 
     def _stable_hash(x: Any) -> str:
         # Stable, deterministic ordering independent of Python's hash randomization.
@@ -266,15 +292,37 @@ def main() -> int:
     if args.mode == "grid":
         _pos_kps = pos_kps if pos_kps is not None else [None]
         _pos_kds = pos_kds if pos_kds is not None else [None]
+        _ck = crouch_knees if crouch_knees is not None else [None]
+        _ca = crouch_ankles if crouch_ankles is not None else [None]
+        _mr = max_rolls if max_rolls is not None else [None]
+        _mp = max_pitches if max_pitches is not None else [None]
+        _bh = base_heights if base_heights is not None else [None]
         all_params = list(
             itertools.product(
-                kps, kds, taus, dts, settles, warmups, blends, grav_flags, grav_scales, kd_blends, _pos_kps, _pos_kds
+                kps,
+                kds,
+                taus,
+                dts,
+                settles,
+                warmups,
+                blends,
+                grav_flags,
+                grav_scales,
+                kd_blends,
+                _pos_kps,
+                _pos_kds,
+                stances,
+                _ck,
+                _ca,
+                _mr,
+                _mp,
+                _bh,
             )
         )
         max_grid = max(1, args.trials)
         if len(all_params) > max_grid:
             all_params = _downsample_grid(all_params, max_grid)
-        for kp, kd, tau, dt, settle, warmup, blend, grav, gscale, kd_blend, pos_kp, pos_kd in all_params:
+        for kp, kd, tau, dt, settle, warmup, blend, grav, gscale, kd_blend, pos_kp, pos_kd, stance, ck, ca, mr, mp, bh in all_params:
             planned_params.append(
                 {
                     "kp": kp,
@@ -289,6 +337,12 @@ def main() -> int:
                     "kd_blend_factor": float(kd_blend),
                     "pos_kp": float(pos_kp) if pos_kp is not None else None,
                     "pos_kd": float(pos_kd) if pos_kd is not None else None,
+                    "stance": str(stance),
+                    "crouch_knee": float(ck) if ck is not None else None,
+                    "crouch_ankle": float(ca) if ca is not None else None,
+                    "max_roll": float(mr) if mr is not None else None,
+                    "max_pitch": float(mp) if mp is not None else None,
+                    "base_height": float(bh) if bh is not None else None,
                 }
             )
 
@@ -305,6 +359,12 @@ def main() -> int:
                 "kd_blend_factor": sorted({p["kd_blend_factor"] for p in planned_params}),
                 "pos_kp": sorted({p["pos_kp"] for p in planned_params}),
                 "pos_kd": sorted({p["pos_kd"] for p in planned_params}),
+                "stance": sorted({p["stance"] for p in planned_params}),
+                "crouch_knee": sorted({p["crouch_knee"] for p in planned_params}),
+                "crouch_ankle": sorted({p["crouch_ankle"] for p in planned_params}),
+                "max_roll": sorted({p["max_roll"] for p in planned_params}),
+                "max_pitch": sorted({p["max_pitch"] for p in planned_params}),
+                "base_height": sorted({p["base_height"] for p in planned_params}),
             }
             print("[grid] actual coverage:", used)
         except Exception:
@@ -326,6 +386,12 @@ def main() -> int:
                     "kd_blend_factor": float(random.choice(kd_blends)),
                     "pos_kp": float(random.choice(pos_kps)) if pos_kps is not None else None,
                     "pos_kd": float(random.choice(pos_kds)) if pos_kds is not None else None,
+                    "stance": str(random.choice(stances)) if stances else "standing",
+                    "crouch_knee": float(random.choice(crouch_knees)) if crouch_knees is not None else None,
+                    "crouch_ankle": float(random.choice(crouch_ankles)) if crouch_ankles is not None else None,
+                    "max_roll": float(random.choice(max_rolls)) if max_rolls is not None else None,
+                    "max_pitch": float(random.choice(max_pitches)) if max_pitches is not None else None,
+                    "base_height": float(random.choice(base_heights)) if base_heights is not None else None,
                 }
             )
 
@@ -342,6 +408,16 @@ def main() -> int:
         cfg = dict(base_cfg)
         cfg_runner = dict(runner_cfg)
         cfg_ctrl = dict(ctrl_cfg)
+        cfg_safety = dict(cfg.get("safety") or {})
+
+        if p.get("max_roll", None) is not None:
+            cfg_safety["max_roll"] = float(p["max_roll"])
+        if p.get("max_pitch", None) is not None:
+            cfg_safety["max_pitch"] = float(p["max_pitch"])
+        cfg["safety"] = cfg_safety
+
+        if p.get("base_height", None) is not None:
+            cfg_runner["base_height"] = float(p["base_height"])
 
         if args.duration is not None:
             cfg_runner["seconds"] = float(args.duration)
@@ -354,6 +430,12 @@ def main() -> int:
         #  - legacy: controller.{kp,kd,tau_limit}
         #  - two_stage: controller.type == "two_stage" and controller.torque.{kp,kd,tau_limit}
         ctrl_type = str(cfg_ctrl.get("type", "torque_pd"))
+        if p.get("stance", None) is not None:
+            cfg_ctrl["stance"] = str(p["stance"])
+        if p.get("crouch_knee", None) is not None:
+            cfg_ctrl["crouch_knee"] = float(p["crouch_knee"])
+        if p.get("crouch_ankle", None) is not None:
+            cfg_ctrl["crouch_ankle"] = float(p["crouch_ankle"])
         if ctrl_type == "two_stage":
             cfg_ctrl["warmup_seconds"] = float(p.get("warmup_seconds", cfg_ctrl.get("warmup_seconds", 1.0)))
             cfg_ctrl["blend_seconds"] = float(p.get("blend_seconds", cfg_ctrl.get("blend_seconds", 0.0)))
@@ -493,6 +575,12 @@ def main() -> int:
     best_cfg_ctrl = best_cfg.get("controller") or {}
     best_cfg_runner["control_dt"] = float(best.params["control_dt"])
     best_cfg_runner["settle_steps"] = int(best.params["settle_steps"])
+    if best.params.get("stance", None) is not None:
+        best_cfg_ctrl["stance"] = str(best.params["stance"])
+    if best.params.get("crouch_knee", None) is not None:
+        best_cfg_ctrl["crouch_knee"] = float(best.params["crouch_knee"])
+    if best.params.get("crouch_ankle", None) is not None:
+        best_cfg_ctrl["crouch_ankle"] = float(best.params["crouch_ankle"])
     if str(best_cfg_ctrl.get("type", "torque_pd")) == "two_stage":
         best_cfg_ctrl["warmup_seconds"] = float(best.params.get("warmup_seconds", best_cfg_ctrl.get("warmup_seconds", 1.0)))
         best_cfg_ctrl["blend_seconds"] = float(best.params.get("blend_seconds", best_cfg_ctrl.get("blend_seconds", 0.0)))
