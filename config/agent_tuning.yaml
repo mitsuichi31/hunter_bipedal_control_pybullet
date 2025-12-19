@@ -3,19 +3,19 @@
 runner:
   seconds: 10.0
   # Controller update period. 0.01 = 100 Hz, 0.001 = 1 kHz
-  control_dt: 0.01
+  control_dt: 0.001
   # Random seed for reproducibility (used by standing-pd-ext)
   seed: 0
   # Number of physics ticks to wait after reset before starting control
-  settle_steps: 300
+  settle_steps: 0
   # Override initial base height (z). null keeps legacy BASE_HEIGHT behavior.
-  base_height: null
+  base_height: 0.679
   log_dir: "runs"
   run_name: "standing_pd_ext"
 
 safety:
-  max_roll: 0.7
-  max_pitch: 0.7
+  max_roll: 1.0
+  max_pitch: 1.0
   min_base_z: 0.12
   max_omega: 20.0
 
@@ -29,8 +29,8 @@ controller:
   # Options: standing, crouch_pos, crouch_neg
   stance: standing
   # Used only when stance is crouch_pos / crouch_neg (standingでは無視されます)
-  crouch_knee: 0.6
-  crouch_ankle: 0.3
+  crouch_knee: 0.0
+  crouch_ankle: 0.0
 
   # Only used when type == "two_stage"
   warmup_seconds: 1.0
@@ -40,10 +40,8 @@ controller:
 
   # Warmup stage (POSITION_CONTROL)
   position:
-    # NOTE: 0.3/0.1 is usually far too soft; robot collapses before hold.
-    # Start with "stiff enough to stand", then tune down if needed.
-    kp: 30.0
-    kd: 1.0
+    kp: 120.0
+    kd: 2.0
 
   # Hold stage (TORQUE_CONTROL PD)
   torque:
@@ -51,8 +49,8 @@ controller:
     kd: 1.5
     tau_limit: 60.0
     # Gravity compensation in hold stage (optional)
-    use_gravity_comp: false
+    use_gravity_comp: true
     gravity_scale: 1.0
     # Increase torque damping only during blend (warmup->hold transition).
     # 1.0 means "no change". Typical sweep: 1.0, 1.5, 2.0, 3.0
-    kd_blend_factor: 2.0
+    kd_blend_factor: 1.0
